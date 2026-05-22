@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::config::{ConfigError, ResolveInput, ResolvedConfig};
 use crate::llm::openai_compat::OpenAiCompatClient;
 use crate::llm::{ChatRequest, ChatResponse, LlmClient, Message, Role, Usage};
-use crate::tools::{Registry, ToolCtx, truncate};
+use crate::tools::{Registry, ToolCtx};
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "a multi-LLM coding agent", version)]
@@ -240,16 +240,13 @@ async fn repl(
             }
             Err(e) => {
                 eprintln!("pi: {e}");
-                // Drop the failed user turn so retry doesn't pile up.
-                while let Some(last) = messages.last() {
-                    match last.role {
-                        Role::User => {
-                            messages.pop();
-                            break;
-                        }
-                        _ => {
-                            messages.pop();
-                        }
+                // Drop the failed user turn so retry doesn't pile up. Stop at
+                // index 1 so the system prompt at index 0 always survives.
+                while messages.len() > 1 {
+                    let role = messages.last().unwrap().role.clone();
+                    messages.pop();
+                    if matches!(role, Role::User) {
+                        break;
                     }
                 }
             }
@@ -318,7 +315,7 @@ async fn drive(
                     }
                 }
             };
-            messages.push(tool_message(&call.id, truncate(content, cfg.max_tool_output)));
+            messages.push(tool_message(&call.id, content));
         }
     }
 
