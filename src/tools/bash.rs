@@ -61,10 +61,11 @@ impl Tool for BashTool {
         }
 
         let mut cmd = Command::new("bash");
-        // Wrap in `{ …; } 2>&1` so the OS gives us a single, time-ordered stream.
-        // Buffering each pipe separately would reorder interleaved logs.
+        // `exec 2>&1` redirects FD 2 to FD 1 in the running shell, then the
+        // user command runs on the next line. Avoids the `{ …; }` wrapper —
+        // which breaks if the model emits a trailing `#` comment or `;`.
         cmd.arg("-c")
-            .arg(format!("{{ {}; }} 2>&1", inp.command))
+            .arg(format!("exec 2>&1\n{}", inp.command))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
