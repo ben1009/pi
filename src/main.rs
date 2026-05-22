@@ -285,7 +285,12 @@ async fn drive(
             .unwrap_or_default();
 
         if calls.is_empty() {
-            messages.push(resp.message.clone());
+            // Don't pollute history with an empty assistant turn — the next
+            // request would 400 on most OpenAI-compat servers.
+            let has_content = resp.message.content.as_deref().is_some_and(|s| !s.is_empty());
+            if has_content {
+                messages.push(resp.message.clone());
+            }
             return Ok(Some(resp));
         }
 
