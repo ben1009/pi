@@ -77,20 +77,16 @@ pub fn resolve(
 ) -> Result<ResolvedConfig> {
     let provider = match provider {
         Some(s) => Provider::parse(s)?,
-        None => match std::env::var("PI_PROVIDER") {
-            Ok(s) => Provider::parse(&s)?,
-            Err(_) => Provider::Anthropic,
-        },
+        None => Provider::Anthropic,
     };
 
     let model = model
         .map(str::to_owned)
-        .or_else(|| std::env::var("PI_MODEL").ok())
         .unwrap_or_else(|| provider.default_model().to_owned());
 
-    let max_tokens = max_tokens
-        .or_else(|| std::env::var("PI_MAX_TOKENS").ok().and_then(|s| s.parse().ok()))
-        .unwrap_or(8192);
+    // PI_MAX_TOKENS is wired through clap's env attr, so by the time we get
+    // here the value (if any) has already been validated as u32.
+    let max_tokens = max_tokens.unwrap_or(8192);
 
     let api_key = std::env::var(provider.api_key_env()).map_err(|_| {
         anyhow!(
