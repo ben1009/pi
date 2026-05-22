@@ -164,6 +164,8 @@ Prefer using the provided tools (bash, read, write, edit) over guessing. When a 
 
 Path resolution: relative paths resolve against the **process CWD at startup**; `bash` inherits the same CWD. The agent does not `cd` between calls.
 
+CWD boundary checks (for the "outside CWD → confirm" rule on `write`/`edit`) operate on the **canonicalized path** — i.e. symlinks are resolved before the prefix comparison so a symlink pointing outside CWD cannot bypass the prompt.
+
 Encoding & errors:
 - `read` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
 - `write` on a path whose parent dir doesn't exist → parent dirs are created automatically.
