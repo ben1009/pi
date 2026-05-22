@@ -61,25 +61,25 @@ impl Tool for BashTool {
         }
 
         let mut cmd = Command::new("bash");
+        // Wrap in `{ …; } 2>&1` so the OS gives us a single, time-ordered stream.
+        // Buffering each pipe separately would reorder interleaved logs.
         cmd.arg("-c")
-            .arg(&inp.command)
+            .arg(format!("{{ {}; }} 2>&1", inp.command))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::null());
 
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("bash: spawn failed: {e}"))?;
 
         let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
 
-        // Drain pipes concurrently with wait(). If the child writes more than
+        // Drain the pipe concurrently with wait(). If the child writes more than
         // ~64KB (the OS pipe buffer) it blocks on write() until someone reads,
         // so reading sequentially after wait() would deadlock.
         let cap = ctx.max_output.saturating_mul(2);
         let stdout_task = stdout.map(|s| tokio::spawn(read_capped(s, cap)));
-        let stderr_task = stderr.map(|s| tokio::spawn(read_capped(s, cap)));
 
         let status = match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
@@ -94,56 +94,46 @@ impl Tool for BashTool {
                 let _ = child.start_kill();
                 let _ = child.wait().await;
                 if let Some(t) = stdout_task { t.abort(); }
-                if let Some(t) = stderr_task { t.abort(); }
                 return Ok(format!("Error: bash command timed out after {timeout_ms}ms (child killed)"));
             }
         };
 
         // Child has exited but the pipe fd may have been leaked to a daemon
         // (e.g. `nohup foo &`). Bound the drain so we don't hang on the leaked
-        // writer; on timeout, abort the readers and return what we have.
-        let stdout_bytes = drain_or_abort(stdout_task).await;
-        let stderr_bytes = drain_or_abort(stderr_task).await;
+        // writer; on timeout, abort the reader and return what we have.
+        let out_bytes = drain_or_abort(stdout_task).await;
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes);
-        let stderr = String::from_utf8_lossy(&stderr_bytes);
-        let mut combined = String::with_capacity(stdout.len() + stderr.len() + 32);
-        combined.push_str(&stdout);
-        if !stderr.is_empty() {
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
-            }
-            combined.push_str(&stderr);
-        }
+        let out = String::from_utf8_lossy(&out_bytes);
         let code = status.code().unwrap_or(-1);
         let header = if code == 0 {
             String::new()
         } else {
             format!("[exit {code}]\n")
         };
-        Ok(truncate(format!("{header}{combined}"), ctx.max_output))
+        Ok(truncate(format!("{header}{out}"), ctx.max_output))
     }
 }
 
-/// Read up to `cap` bytes from `r`, draining anything beyond the cap so the
-/// child's pipe buffer doesn't block its writes. We don't care about the
-/// excess — `truncate()` would discard it anyway, and capping here bounds
-/// memory for runaway commands like `cat /dev/urandom`.
+/// Read up to `cap` bytes from `r`. `take(cap)` returns Ready as soon as the
+/// cap is hit, so we don't need a separate sink drain — the reader stops even
+/// if the pipe stays open (e.g. a leaked-fd daemon).
 async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(cap.min(8192));
     let mut limited = (&mut r).take(cap as u64);
     let _ = limited.read_to_end(&mut buf).await;
-    let mut sink = tokio::io::sink();
-    let _ = tokio::io::copy(&mut r, &mut sink).await;
     buf
 }
 
-/// Wait briefly for a pipe-reader task to finish; if it doesn't (e.g. a daemon
-/// child leaked the pipe fd), abort it and return whatever was buffered.
+/// Wait briefly for the pipe-reader task to finish; if it doesn't (leaked pipe
+/// fd holding the writer side open), abort the handle so the task doesn't
+/// linger detached.
 async fn drain_or_abort(task: Option<tokio::task::JoinHandle<Vec<u8>>>) -> Vec<u8> {
-    let Some(handle) = task else { return Vec::new() };
-    match tokio::time::timeout(Duration::from_secs(5), handle).await {
+    let Some(mut handle) = task else { return Vec::new() };
+    match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
         Ok(res) => res.unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Err(_) => {
+            handle.abort();
+            Vec::new()
+        }
     }
 }
