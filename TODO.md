@@ -10,14 +10,8 @@ Pre-v1, in priority order.
   non-2xx error path, finish_reason variants, tool-call shape. Fix
   whatever falls over. The bots couldn't catch this; we haven't actually
   run `pi` end-to-end.
-- **LICENSE.** RFC §15 promised one before code landed; we shipped four
-  PRs without it. Pick MIT or Apache-2.0, drop a `LICENSE` file at repo
-  root, mention in README and `Cargo.toml`.
-- **CI.** `.github/workflows/ci.yml` running `cargo fmt --check`,
-  `cargo clippy -- -D warnings`, `cargo test` on push and PR. Run on
-  both Linux and macOS so platform-specific paths (bash spawn, dirs
-  resolution, canonicalize) get exercised. No live-API jobs (wiremock
-  covers the network surface). Add a status badge to README.
+- ~~**LICENSE.**~~ Done. Apache-2.0.
+- ~~**CI.**~~ Done. Full pipeline: fmt, clippy, typos, tests (ubuntu + macOS), coverage (codecov), sanitizers, dependency review, nightly rolling.
 
 ## Next
 

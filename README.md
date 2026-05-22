@@ -1,5 +1,8 @@
 # pi
 
+[![Check](https://github.com/ben1009/pi/actions/workflows/check.yml/badge.svg)](https://github.com/ben1009/pi/actions/workflows/check.yml)
+[![Test](https://github.com/ben1009/pi/actions/workflows/test.yml/badge.svg)](https://github.com/ben1009/pi/actions/workflows/test.yml)
+
 A multi-LLM coding agent in Rust. Single binary, OpenAI-compatible Chat Completions wire format, four built-in tools (bash, read, write, edit).
 
 ## Install
@@ -76,6 +79,22 @@ History is persisted to `$XDG_DATA_HOME/pi/history` (typically `~/.local/share/p
 | 0    | Success (model finished and produced text, or REPL exited cleanly). |
 | 1    | API error, tool fatal error, `--max-turns` exhausted, or unknown provider. |
 | 2    | Missing API key for the selected provider.                       |
+
+## Development
+
+Prerequisites: Rust nightly (pinned via `rust-toolchain`), `cargo-make`.
+
+```
+./dev              # list available tasks
+./dev check        # run all checks (fmt, clippy, machete, test, typos)
+./dev test         # run tests only
+./dev check-fmt    # format check only
+./dev check-clippy # clippy only
+```
+
+The `dev` script auto-installs `cargo-binstall` and `cargo-make` on first run.
+
+CI runs on every push/PR: fmt, clippy, typos, tests (ubuntu + macOS), coverage (codecov), sanitizers (ASan/leak), dependency review, and a nightly rolling build.
 
 ## Design
 
