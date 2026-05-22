@@ -172,12 +172,7 @@ async fn repl(
         let line = match read.1 {
             Ok(l) => l,
             Err(ReadlineError::Interrupted) => continue,
-            Err(ReadlineError::Eof) => {
-                if let Some(p) = &history_path {
-                    let _ = rl.save_history(p);
-                }
-                return Ok(0);
-            }
+            Err(ReadlineError::Eof) => return Ok(0),
             Err(e) => {
                 eprintln!("pi: stdin: {e}");
                 return Ok(EXIT_API_OR_TURNS);
@@ -189,12 +184,7 @@ async fn repl(
             continue;
         }
         match trimmed {
-            "/exit" | "/quit" => {
-                if let Some(p) = &history_path {
-                    let _ = rl.save_history(p);
-                }
-                return Ok(0);
-            }
+            "/exit" | "/quit" => return Ok(0),
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
