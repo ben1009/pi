@@ -1,4 +1,13 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("unknown provider: {0}")]
+    UnknownProvider(String),
+    #[error("missing API key: set ${env} for provider '{provider}'")]
+    MissingKey { env: &'static str, provider: &'static str },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -10,14 +19,14 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> Result<Self, ConfigError> {
         Ok(match s.to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => Self::Anthropic,
             "openai" | "oai" => Self::Openai,
             "gemini" | "google" => Self::Gemini,
             "deepseek" | "ds" => Self::Deepseek,
             "kimi" | "moonshot" => Self::Kimi,
-            other => return Err(anyhow!("unknown provider: {other}")),
+            other => return Err(ConfigError::UnknownProvider(other.to_owned())),
         })
     }
 
@@ -74,7 +83,7 @@ pub fn resolve(
     provider: Option<&str>,
     model: Option<&str>,
     max_tokens: Option<u32>,
-) -> Result<ResolvedConfig> {
+) -> Result<ResolvedConfig, ConfigError> {
     let provider = match provider {
         Some(s) => Provider::parse(s)?,
         None => Provider::Anthropic,
@@ -84,17 +93,16 @@ pub fn resolve(
         .map(str::to_owned)
         .unwrap_or_else(|| provider.default_model().to_owned());
 
-    // PI_MAX_TOKENS is wired through clap's env attr, so by the time we get
-    // here the value (if any) has already been validated as u32.
     let max_tokens = max_tokens.unwrap_or(8192);
 
-    let api_key = std::env::var(provider.api_key_env()).map_err(|_| {
-        anyhow!(
-            "missing API key: set ${} for provider '{}'",
-            provider.api_key_env(),
-            provider.name()
-        )
-    })?;
+    let api_key = std::env::var(provider.api_key_env())
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .ok_or(ConfigError::MissingKey {
+            env: provider.api_key_env(),
+            provider: provider.name(),
+        })?;
 
     Ok(ResolvedConfig {
         provider,

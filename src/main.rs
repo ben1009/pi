@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::config::ResolvedConfig;
+use crate::config::{ConfigError, ResolvedConfig};
 use crate::llm::openai_compat::OpenAiCompatClient;
 use crate::llm::{ChatRequest, ChatResponse, LlmClient, Message};
 
@@ -55,12 +55,9 @@ async fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("pi: {e}");
-            // Only missing-API-key errors should map to exit 2; other config
-            // errors (unknown provider, etc.) are usage problems → exit 1.
-            let code = if e.to_string().starts_with("missing API key") {
-                EXIT_MISSING_KEY
-            } else {
-                EXIT_API_OR_TURNS
+            let code = match e {
+                ConfigError::MissingKey { .. } => EXIT_MISSING_KEY,
+                ConfigError::UnknownProvider(_) => EXIT_API_OR_TURNS,
             };
             std::process::exit(code);
         }
@@ -186,10 +183,19 @@ async fn repl(client: &OpenAiCompatClient, cfg: &ResolvedConfig, mut messages: V
         messages.push(Message::user(line));
         match send(client, cfg, &messages).await {
             Ok(reply) => {
-                if let Some(text) = reply.content.as_deref() {
+                let text = reply.content.as_deref().unwrap_or("");
+                if !text.is_empty() {
                     println!("{text}");
                 }
-                messages.push(reply);
+                let has_tool_calls = reply.tool_calls.as_ref().is_some_and(|c| !c.is_empty());
+                if text.is_empty() && !has_tool_calls {
+                    // Don't pollute history with an empty assistant turn — many
+                    // OpenAI-compat servers reject the next request if assistant
+                    // content is None and no tool_calls are present.
+                    eprintln!("pi: model produced no text");
+                } else {
+                    messages.push(reply);
+                }
             }
             Err(e) => {
                 eprintln!("pi: {e}");

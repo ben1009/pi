@@ -29,6 +29,8 @@ impl OpenAiCompatClient {
     pub fn new(base_url: String, api_key: String) -> Self {
         let http = reqwest::Client::builder()
             .user_agent(concat!("pi/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(600))
             .build()
             .expect("build reqwest client");
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -88,8 +90,9 @@ impl LlmClient for OpenAiCompatClient {
             ));
         }
 
-        let parsed: WireResponse = serde_json::from_str(&text)
-            .map_err(|e| anyhow!("decode response: {e}\nbody: {text}"))?;
+        let parsed: WireResponse = serde_json::from_str(&text).map_err(|e| {
+            anyhow!("decode response: {e}\nbody: {}", truncate(&text, 2000))
+        })?;
 
         let choice = parsed
             .choices
@@ -97,9 +100,13 @@ impl LlmClient for OpenAiCompatClient {
             .next()
             .ok_or_else(|| anyhow!("API returned no choices"))?;
 
+        let finish_reason = choice
+            .finish_reason
+            .ok_or_else(|| anyhow!("API response missing finish_reason"))?;
+
         Ok(ChatResponse {
             message: choice.message,
-            finish_reason: choice.finish_reason.unwrap_or_else(|| "stop".to_owned()),
+            finish_reason,
             usage: parsed.usage,
         })
     }
