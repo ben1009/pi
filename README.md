@@ -1,14 +1,14 @@
 # pi
 
-[![Check](https://github.com/ben1009/pi/actions/workflows/check.yml/badge.svg)](https://github.com/ben1009/pi/actions/workflows/check.yml)
-[![Test](https://github.com/ben1009/pi/actions/workflows/test.yml/badge.svg)](https://github.com/ben1009/pi/actions/workflows/test.yml)
+[![Check](https://github.com/ben1009/pi-rs/actions/workflows/check.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/check.yml)
+[![Test](https://github.com/ben1009/pi-rs/actions/workflows/test.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/test.yml)
 
 A multi-LLM coding agent in Rust. Single binary, OpenAI-compatible Chat Completions wire format, four built-in tools (bash, read, write, edit).
 
 ## Install
 
 ```
-cargo install --git https://github.com/ben1009/pi
+cargo install --git https://github.com/ben1009/pi-rs
 ```
 
 ## Quickstart
