@@ -1,18 +1,15 @@
-mod config;
-mod confirm;
-mod llm;
-mod tools;
-
-use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
-use crate::config::{ConfigError, ResolveInput, ResolvedConfig};
-use crate::llm::openai_compat::OpenAiCompatClient;
-use crate::llm::{ChatRequest, ChatResponse, LlmClient, Message, Role, Usage};
-use crate::tools::{Registry, ToolCtx};
+use pi::config::{self, ConfigError, ResolveInput, ResolvedConfig};
+use pi::llm::openai_compat::OpenAiCompatClient;
+use pi::llm::{ChatRequest, ChatResponse, LlmClient, Message, Role, Usage};
+use pi::system_prompt;
+use pi::tools::{Registry, ToolCtx};
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "a multi-LLM coding agent", version)]
@@ -85,47 +82,6 @@ async fn main() {
     std::process::exit(code);
 }
 
-fn system_prompt() -> String {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_owned());
-    let os = std::env::consts::OS;
-    let date = today_utc();
-    format!(
-        "You are pi, a CLI coding agent. You help the user edit and run code in their working directory.\n\n\
-         Working directory: {cwd}\n\
-         Operating system: {os}\n\
-         Date: {date}\n\n\
-         Prefer using the provided tools (bash, read, write, edit) over guessing. \
-         When a tool returns an error, read the error and try a different approach. \
-         Be concise."
-    )
-}
-
-fn today_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let days = (secs / 86_400) as i64;
-    let (y, m, d) = days_to_ymd(days);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
-    days += 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let doe = (days - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let y = if m <= 2 { y + 1 } else { y };
-    (y as i32, m, d)
-}
-
 struct ReplState {
     last_usage: Option<Usage>,
 }
@@ -170,8 +126,18 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
             }
         }
     } else {
-        repl(&client, &cfg, &registry, messages).await
+        match repl(&client, &cfg, &registry, messages).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("pi: {e}");
+                EXIT_API_OR_TURNS
+            }
+        }
     }
+}
+
+fn history_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("pi").join("history"))
 }
 
 async fn repl(
@@ -179,21 +145,42 @@ async fn repl(
     cfg: &ResolvedConfig,
     registry: &Registry,
     mut messages: Vec<Message>,
-) -> i32 {
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin).lines();
+) -> Result<i32> {
+    let history_path = history_path();
+    if let Some(p) = &history_path {
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    let mut rl = DefaultEditor::new()?;
+    if let Some(p) = &history_path {
+        let _ = rl.load_history(p);
+    }
     let mut state = ReplState { last_usage: None };
 
     loop {
-        print!("> ");
-        std::io::stdout().flush().ok();
+        let mut editor = Some(rl);
+        let read = tokio::task::spawn_blocking(move || {
+            let mut ed = editor.take().unwrap();
+            let res = ed.readline("> ");
+            (ed, res)
+        })
+        .await?;
+        rl = read.0;
 
-        let line = match reader.next_line().await {
-            Ok(Some(l)) => l,
-            Ok(None) => return 0,
+        let line = match read.1 {
+            Ok(l) => l,
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => {
+                if let Some(p) = &history_path {
+                    let _ = rl.save_history(p);
+                }
+                return Ok(0);
+            }
             Err(e) => {
                 eprintln!("pi: stdin: {e}");
-                return EXIT_API_OR_TURNS;
+                return Ok(EXIT_API_OR_TURNS);
             }
         };
 
@@ -201,8 +188,17 @@ async fn repl(
         if trimmed.is_empty() {
             continue;
         }
+        let _ = rl.add_history_entry(line.as_str());
+        if let Some(p) = &history_path {
+            let _ = rl.append_history(p);
+        }
         match trimmed {
-            "/exit" | "/quit" => return 0,
+            "/exit" | "/quit" => {
+                if let Some(p) = &history_path {
+                    let _ = rl.save_history(p);
+                }
+                return Ok(0);
+            }
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
