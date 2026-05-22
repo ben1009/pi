@@ -160,11 +160,9 @@ async fn repl(
     let mut state = ReplState { last_usage: None };
 
     loop {
-        let mut editor = Some(rl);
         let read = tokio::task::spawn_blocking(move || {
-            let mut ed = editor.take().unwrap();
-            let res = ed.readline("> ");
-            (ed, res)
+            let res = rl.readline("> ");
+            (rl, res)
         })
         .await?;
         rl = read.0;
