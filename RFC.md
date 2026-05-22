@@ -150,23 +150,23 @@ Prefer using the provided tools (bash, read, write, edit) over guessing. When a 
 - `finish_reason = stop` and no tool calls → return to outer loop.
 - Ctrl-C during an in-flight API call or running tool: cancel the future, discard the partial assistant message, return to the prompt. The user's last input stays in history so they can re-send.
 - Ctrl-D / `/exit` → exit 0.
-- API non-2xx → print body to stderr, drop the unsent user turn, keep loop alive.
+- API non-2xx → print body to stderr, **keep the user message in history** and **restore the user's last input into the readline buffer** so they can edit and retry without retyping. Loop stays alive.
 - Unknown tool name from the model → tool message `Error: unknown tool '<name>'`; the model recovers.
 
 ## 7. Tools (v0)
 
 | name    | input                                            | behavior                                                                |
 |---------|--------------------------------------------------|-------------------------------------------------------------------------|
-| `bash`  | `{ command: string, timeout_ms?: number }`       | `sh -c`, **stdout+stderr merged** in source order, 120s default, 600s max. |
+| `bash`  | `{ command: string, timeout_ms?: number }`       | `bash -c` (non-interactive, non-login), **stdout+stderr merged** in source order, 120s default, 600s max. |
 | `read`  | `{ path: string, offset?: number, limit?: number }` | UTF-8 only; `cat -n` style line numbers; 2000-line default window.   |
-| `write` | `{ path: string, content: string }`              | Overwrite/create; **content written as-is**, no newline coercion. Confirm if path outside CWD. |
+| `write` | `{ path: string, content: string }`              | Overwrite/create; **auto-creates parent directories** (`mkdir -p` semantics); **content written as-is**, no newline coercion. Confirm if path outside CWD. |
 | `edit`  | `{ path, old_string, new_string, replace_all? }` | **Exact byte match** (no whitespace normalization). Error if `old_string` not unique and not `replace_all`. On miss, return up to 3 nearest line-number candidates. |
 
 Path resolution: relative paths resolve against the **process CWD at startup**; `bash` inherits the same CWD. The agent does not `cd` between calls.
 
 Encoding & errors:
 - `read` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
-- `write` on a path whose parent dir doesn't exist → tool error (don't auto-`mkdir -p`).
+- `write` on a path whose parent dir doesn't exist → parent dirs are created automatically.
 - `edit` miss → tool error including nearest matching lines so the model can self-correct without a re-`read`.
 
 Tool trait:
@@ -183,7 +183,7 @@ pub trait Tool: Send + Sync {
 
 Tools return **plain UTF-8 strings**, which the agent puts into the OpenAI `tool` message `content` field as-is. No JSON wrapping.
 
-Result cap: 25,000 chars per tool result; excess replaced with `\n... <truncated, N more chars>`.
+Result cap: **100,000 chars** per tool result by default, override with `--max-tool-output`. Excess replaced with `\n... <truncated, N more chars>`. Large enough for typical source files and build logs without ballooning context cost.
 
 Confirmation: `bash`, plus `write`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
 
@@ -195,6 +195,7 @@ pi -p "fix the failing test"        # one-shot prompt
 pi -P anthropic -m claude-opus-4-7  # provider/model override
 pi --max-tokens 16384
 pi --max-turns 30
+pi --max-tool-output 200000         # bump per-tool-result cap
 pi --yolo                           # skip confirmations
 pi --print-system-prompt            # dump rendered prompt and exit 0
 ```
@@ -242,7 +243,7 @@ Test-only:
 1. Default provider: **Anthropic** (model from `config.rs` const table).
 2. Streaming: **off in v0**.
 3. Bash sandboxing: **confirm-prompt only**. Not safe for untrusted prompts. Documented.
-4. Tool result cap: **25,000 chars**.
+4. Tool result cap: **100,000 chars** default; configurable via `--max-tool-output`.
 5. Quirks: **fail loudly** if a provider rejects something; do not silently rewrite requests.
 6. Tool execution: **sequential**, in the order the model emitted them.
 7. `max_tokens` default: **8192**.
