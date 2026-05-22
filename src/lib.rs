@@ -30,6 +30,7 @@ fn today_utc() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+// Howard Hinnant's civil_from_days. Days are signed days since 1970-01-01.
 fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
     days += 719_468;
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;

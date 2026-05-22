@@ -149,7 +149,9 @@ async fn repl(
     let history_path = history_path();
     if let Some(p) = &history_path {
         if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("pi: warning: could not create history dir {}: {e}", parent.display());
+            }
         }
     }
 
@@ -186,10 +188,6 @@ async fn repl(
         if trimmed.is_empty() {
             continue;
         }
-        let _ = rl.add_history_entry(line.as_str());
-        if let Some(p) = &history_path {
-            let _ = rl.append_history(p);
-        }
         match trimmed {
             "/exit" | "/quit" => {
                 if let Some(p) = &history_path {
@@ -214,6 +212,11 @@ async fn repl(
                 continue;
             }
             _ => {}
+        }
+        // Persist actual prompts only — slash commands stay out of history.
+        let _ = rl.add_history_entry(line.as_str());
+        if let Some(p) = &history_path {
+            let _ = rl.append_history(p);
         }
 
         messages.push(Message::user(line));
