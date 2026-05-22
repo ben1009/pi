@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 use rustyline::DefaultEditor;
+use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 
 use pi::config::{self, ConfigError, ResolveInput, ResolvedConfig};
@@ -156,6 +157,7 @@ async fn repl(
     }
 
     let mut rl = DefaultEditor::new()?;
+    rl.set_max_history_size(1000)?;
     if let Some(p) = &history_path {
         let _ = rl.load_history(p);
     }
@@ -172,7 +174,14 @@ async fn repl(
         let line = match read.1 {
             Ok(l) => l,
             Err(ReadlineError::Interrupted) => continue,
-            Err(ReadlineError::Eof) => return Ok(0),
+            Err(ReadlineError::Eof) => {
+                // Compact the on-disk history once on graceful exit so
+                // append_history's growth stays bounded by max_history_size.
+                if let Some(p) = &history_path {
+                    let _ = rl.save_history(p);
+                }
+                return Ok(0);
+            }
             Err(e) => {
                 eprintln!("pi: stdin: {e}");
                 return Ok(EXIT_API_OR_TURNS);
@@ -184,7 +193,12 @@ async fn repl(
             continue;
         }
         match trimmed {
-            "/exit" | "/quit" => return Ok(0),
+            "/exit" | "/quit" => {
+                if let Some(p) = &history_path {
+                    let _ = rl.save_history(p);
+                }
+                return Ok(0);
+            }
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
