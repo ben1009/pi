@@ -80,3 +80,7 @@ History is persisted to `$XDG_DATA_HOME/pi/history` (typically `~/.local/share/p
 ## Design
 
 See [RFC.md](./RFC.md) for the full spec, tradeoffs, and v0 non-goals.
+
+## License
+
+Apache-2.0 — see [LICENSE](./LICENSE).
