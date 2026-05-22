@@ -114,13 +114,16 @@ impl Tool for BashTool {
     }
 }
 
-/// Read up to `cap` bytes from `r`. `take(cap)` returns Ready as soon as the
-/// cap is hit, so we don't need a separate sink drain — the reader stops even
-/// if the pipe stays open (e.g. a leaked-fd daemon).
+/// Read up to `cap` bytes from `r` into a buffer, then keep draining (and
+/// discarding) the rest of the stream so the child's pipe buffer never fills.
+/// Without the post-cap drain, a child that writes more than `cap` bytes would
+/// fill the ~64KB OS pipe buffer and block on `write()` until the bash timeout.
 async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(cap.min(8192));
     let mut limited = (&mut r).take(cap as u64);
     let _ = limited.read_to_end(&mut buf).await;
+    let mut sink = tokio::io::sink();
+    let _ = tokio::io::copy(&mut r, &mut sink).await;
     buf
 }
 

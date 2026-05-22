@@ -104,7 +104,7 @@ impl Tool for EditTool {
 /// Best-effort hint when an exact match fails: find lines whose first non-blank
 /// content overlaps the first non-blank line of `needle`, return up to `n` of them.
 fn nearest_lines(haystack: &str, needle: &str, n: usize) -> String {
-    let needle_first = needle.lines().next().unwrap_or("").trim();
+    let needle_first = needle.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     if needle_first.is_empty() {
         return "  (no hints available)".to_owned();
     }
