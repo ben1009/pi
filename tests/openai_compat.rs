@@ -1,4 +1,4 @@
-use pi::llm::{
+use pi_rs::llm::{
     ChatRequest, LlmClient, Message, Role, ToolCall, ToolCallFunction,
     openai_compat::OpenAiCompatClient,
 };
@@ -91,9 +91,9 @@ async fn tool_call_round_trip() {
         .complete(ChatRequest {
             model: "m".into(),
             messages: messages.clone(),
-            tools: vec![pi::llm::ToolDef {
+            tools: vec![pi_rs::llm::ToolDef {
                 kind: "function",
-                function: pi::llm::ToolDefFunction {
+                function: pi_rs::llm::ToolDefFunction {
                     name: "bash",
                     description: "run a shell command",
                     parameters: json!({"type":"object"}),
@@ -130,9 +130,9 @@ async fn tool_call_round_trip() {
         .complete(ChatRequest {
             model: "m".into(),
             messages: messages.clone(),
-            tools: vec![pi::llm::ToolDef {
+            tools: vec![pi_rs::llm::ToolDef {
                 kind: "function",
-                function: pi::llm::ToolDefFunction {
+                function: pi_rs::llm::ToolDefFunction {
                     name: "bash",
                     description: "run a shell command",
                     parameters: json!({"type":"object"}),

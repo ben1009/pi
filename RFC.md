@@ -1,4 +1,4 @@
-# RFC: `pi` — a multi-LLM coding agent in Rust
+# RFC: `pi-rs` — a multi-LLM coding agent in Rust
 
 Status: draft (post self-review)
 Author: liu
@@ -73,10 +73,10 @@ pub(crate) trait LlmClient: Send + Sync {
 
 ## 5. Configuration
 
-Precedence: CLI flag → env var → `~/.config/pi/config.toml` → built-in defaults.
+Precedence: CLI flag → env var → `~/.config/pi-rs/config.toml` → built-in defaults.
 
 ```toml
-# ~/.config/pi/config.toml
+# ~/.config/pi-rs/config.toml
 default_provider = "anthropic"
 
 [providers.openai]
@@ -101,9 +101,9 @@ base_url = "https://api.moonshot.ai/v1"
 api_key_env = "MOONSHOT_API_KEY"
 ```
 
-Env: `PI_PROVIDER`, `PI_MODEL`, `PI_MAX_TOKENS`. CLI: `pi -P openai -m gpt-5 --max-tokens 8192`.
+Env: `PI_PROVIDER`, `PI_MODEL`, `PI_MAX_TOKENS`. CLI: `pi-rs -P openai -m gpt-5 --max-tokens 8192`.
 
-Built-in defaults match the table in §3 so a user can do `OPENAI_API_KEY=sk-… pi -P openai` with no config file.
+Built-in defaults match the table in §3 so a user can do `OPENAI_API_KEY=sk-… pi-rs -P openai` with no config file.
 
 ## 6. Agent loop
 
@@ -134,7 +134,7 @@ loop {
 Sent on every request, not stored in user-visible history; preserved across `/clear`:
 
 ```
-You are pi, a CLI coding agent. You help the user edit and run code in their working directory.
+You are pi-rs, a CLI coding agent. You help the user edit and run code in their working directory.
 
 Working directory: {cwd}
 Operating system: {os}
@@ -192,14 +192,14 @@ Confirmation: `bash`, plus `write`/`edit` to paths outside CWD, prompt y/n unles
 ## 8. CLI
 
 ```
-pi                                  # interactive REPL in CWD
-pi -p "fix the failing test"        # one-shot prompt
-pi -P anthropic -m claude-opus-4-7  # provider/model override
-pi --max-tokens 16384
-pi --max-turns 30
-pi --max-tool-output 200000         # bump per-tool-result cap
-pi --yolo                           # skip confirmations
-pi --print-system-prompt            # dump rendered prompt and exit 0
+pi-rs                               # interactive REPL in CWD
+pi-rs -p "fix the failing test"     # one-shot prompt
+pi-rs -P anthropic -m claude-opus-4-7  # provider/model override
+pi-rs --max-tokens 16384
+pi-rs --max-turns 30
+pi-rs --max-tool-output 200000      # bump per-tool-result cap
+pi-rs --yolo                        # skip confirmations
+pi-rs --print-system-prompt         # dump rendered prompt and exit 0
 ```
 
 REPL slash commands: `/clear` (reset history; system prompt preserved), `/exit`, `/tokens` (print last response's `usage` block).

@@ -10,7 +10,7 @@ pub fn system_prompt() -> String {
     let os = std::env::consts::OS;
     let date = today_utc();
     format!(
-        "You are pi, a CLI coding agent. You help the user edit and run code in their working directory.\n\n\
+        "You are pi-rs, a CLI coding agent. You help the user edit and run code in their working directory.\n\n\
          Working directory: {cwd}\n\
          Operating system: {os}\n\
          Date: {date}\n\n\

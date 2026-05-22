@@ -9,7 +9,7 @@ Pre-v1, in priority order.
   OpenAI / Anthropic / Gemini / DeepSeek / Kimi with real keys. Confirm
   non-2xx error path, finish_reason variants, tool-call shape. Fix
   whatever falls over. The bots couldn't catch this; we haven't actually
-  run `pi` end-to-end.
+  run `pi-rs` end-to-end.
 - ~~**LICENSE.**~~ Done. Apache-2.0.
 - ~~**CI.**~~ Done. Full pipeline: fmt, clippy, typos, tests (ubuntu + macOS), coverage (codecov), sanitizers, dependency review, nightly rolling.
 
@@ -22,14 +22,14 @@ Pre-v1, in priority order.
   `/v1/chat/completions`; rustyline output without breaking the REPL
   prompt; tool calls arrive in deltas, need accumulation.
 - **Conversation `/resume`.** Persist message history per session
-  (`$XDG_DATA_HOME/pi/sessions/<id>.json`); `pi --resume <id>` reloads.
-  Pair with `pi --sessions` (and a `/sessions` slash command) that
+  (`$XDG_DATA_HOME/pi-rs/sessions/<id>.json`); `pi-rs --resume <id>` reloads.
+  Pair with `pi-rs --sessions` (and a `/sessions` slash command) that
   lists IDs with first-prompt + timestamp so users don't have to
   remember UUIDs. Also enables a `/save` slash command.
 - **Native Anthropic adapter.** Prompt caching headers
   (`cache_control: ephemeral` on system prompt + tool list) cut cost
   significantly across multi-turn sessions. Implement as a second
-  `LlmClient` impl behind `pi -P anthropic-native`, leave OpenAI-compat
+  `LlmClient` impl behind `pi-rs -P anthropic-native`, leave OpenAI-compat
   Anthropic as the default fallback.
 
 ## Later

@@ -1,4 +1,4 @@
-# pi
+# pi-rs
 
 [![Check](https://github.com/ben1009/pi-rs/actions/workflows/check.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/check.yml)
 [![Test](https://github.com/ben1009/pi-rs/actions/workflows/test.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/test.yml)
@@ -14,10 +14,10 @@ cargo install --git https://github.com/ben1009/pi-rs
 ## Quickstart
 
 ```
-ANTHROPIC_API_KEY=sk-... pi -p "fix the failing test"
+ANTHROPIC_API_KEY=sk-... pi-rs -p "fix the failing test"
 ```
 
-With no `-p`, `pi` opens an interactive REPL in the current directory. Provider defaults to Anthropic.
+With no `-p`, `pi-rs` opens an interactive REPL in the current directory. Provider defaults to Anthropic.
 
 ## Providers
 
@@ -34,10 +34,10 @@ Pick a provider with `-P` (or `PI_PROVIDER`) and supply its API key via env var:
 Examples:
 
 ```
-OPENAI_API_KEY=sk-...     pi -P openai     -p "summarise main.rs"
-GEMINI_API_KEY=...        pi -P gemini     -m gemini-2.5-pro
-DEEPSEEK_API_KEY=sk-...   pi -P deepseek
-MOONSHOT_API_KEY=sk-...   pi -P kimi
+OPENAI_API_KEY=sk-...     pi-rs -P openai     -p "summarise main.rs"
+GEMINI_API_KEY=...        pi-rs -P gemini     -m gemini-2.5-pro
+DEEPSEEK_API_KEY=sk-...   pi-rs -P deepseek
+MOONSHOT_API_KEY=sk-...   pi-rs -P kimi
 ```
 
 ## CLI flags
@@ -70,7 +70,7 @@ CWD checks canonicalize the target path before comparing, so symlinks pointing o
 | `/exit`, `/quit`   | Exit the REPL with code 0.                          |
 | `/tokens`          | Print the last response's `usage` block.            |
 
-History is persisted to `$XDG_DATA_HOME/pi/history` (typically `~/.local/share/pi/history`).
+History is persisted to `$XDG_DATA_HOME/pi-rs/history` (typically `~/.local/share/pi-rs/history`).
 
 ## Exit codes
 

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use pi::{
+use pi_rs::{
     config::{self, ConfigError, ResolveInput, ResolvedConfig},
     llm::{
         ChatRequest, ChatResponse, LlmClient, Message, Role, Usage,
@@ -14,7 +14,7 @@ use pi::{
 use rustyline::{DefaultEditor, config::Configurer, error::ReadlineError};
 
 #[derive(Parser, Debug)]
-#[command(name = "pi", about = "a multi-LLM coding agent", version)]
+#[command(name = "pi-rs", about = "a multi-LLM coding agent", version)]
 struct Cli {
     /// Provider: anthropic, openai, gemini, deepseek, kimi
     #[arg(short = 'P', long, env = "PI_PROVIDER")]
@@ -71,7 +71,7 @@ async fn main() {
     }) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("pi: {e}");
+            eprintln!("pi-rs: {e}");
             let code = match e {
                 ConfigError::MissingKey { .. } => EXIT_MISSING_KEY,
                 ConfigError::UnknownProvider(_) => EXIT_API_OR_TURNS,
@@ -109,21 +109,21 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
                     println!("{text}");
                 }
                 if resp.finish_reason != "stop" {
-                    eprintln!("pi: finish_reason={} (incomplete)", resp.finish_reason);
+                    eprintln!("pi-rs: finish_reason={} (incomplete)", resp.finish_reason);
                     return EXIT_API_OR_TURNS;
                 }
                 if text.is_empty() {
-                    eprintln!("pi: model produced no text");
+                    eprintln!("pi-rs: model produced no text");
                     return EXIT_API_OR_TURNS;
                 }
                 0
             }
             Ok(None) => {
-                eprintln!("pi: max turns reached");
+                eprintln!("pi-rs: max turns reached");
                 EXIT_API_OR_TURNS
             }
             Err(e) => {
-                eprintln!("pi: {e}");
+                eprintln!("pi-rs: {e}");
                 EXIT_API_OR_TURNS
             }
         }
@@ -131,7 +131,7 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
         match repl(&client, &cfg, &registry, messages).await {
             Ok(code) => code,
             Err(e) => {
-                eprintln!("pi: {e}");
+                eprintln!("pi-rs: {e}");
                 EXIT_API_OR_TURNS
             }
         }
@@ -139,7 +139,7 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
 }
 
 fn history_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("pi").join("history"))
+    dirs::data_dir().map(|d| d.join("pi-rs").join("history"))
 }
 
 async fn repl(
@@ -186,7 +186,7 @@ async fn repl(
                 return Ok(0);
             }
             Err(e) => {
-                eprintln!("pi: stdin: {e}");
+                eprintln!("pi-rs: stdin: {e}");
                 return Ok(EXIT_API_OR_TURNS);
             }
         };
@@ -205,7 +205,7 @@ async fn repl(
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
-                eprintln!("pi: cleared.");
+                eprintln!("pi-rs: cleared.");
                 continue;
             }
             "/tokens" => {
@@ -236,14 +236,14 @@ async fn repl(
                 if !text.is_empty() {
                     println!("{text}");
                 } else {
-                    eprintln!("pi: model produced no text");
+                    eprintln!("pi-rs: model produced no text");
                 }
             }
             Ok(None) => {
-                eprintln!("pi: max turns reached");
+                eprintln!("pi-rs: max turns reached");
             }
             Err(e) => {
-                eprintln!("pi: {e}");
+                eprintln!("pi-rs: {e}");
                 // Drop the failed user turn so retry doesn't pile up. Stop at
                 // index 1 so the system prompt at index 0 always survives.
                 while messages.len() > 1 {
