@@ -149,7 +149,7 @@ async fn repl(client: &OpenAiCompatClient, cfg: &ResolvedConfig, mut messages: V
             }
             Err(e) => {
                 eprintln!("pi: {e}");
-                // RFC §6.2: keep user message in history; user can edit and retry.
+                messages.pop(); // drop failed turn so retry doesn't duplicate
             }
         }
     }

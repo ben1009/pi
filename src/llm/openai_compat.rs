@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{ChatRequest, ChatResponse, LlmClient, Message, ToolDef, Usage};
 
 pub struct OpenAiCompatClient {
-    base_url: String,
+    url: String,
     api_key: String,
     http: reqwest::Client,
 }
@@ -16,11 +16,8 @@ impl OpenAiCompatClient {
             .user_agent(concat!("pi/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("build reqwest client");
-        Self {
-            base_url,
-            api_key,
-            http,
-        }
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        Self { url, api_key, http }
     }
 }
 
@@ -50,7 +47,6 @@ struct WireChoice {
 #[async_trait]
 impl LlmClient for OpenAiCompatClient {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = WireRequest {
             model: &req.model,
             messages: &req.messages,
@@ -60,7 +56,7 @@ impl LlmClient for OpenAiCompatClient {
 
         let resp = self
             .http
-            .post(&url)
+            .post(&self.url)
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
@@ -69,7 +65,7 @@ impl LlmClient for OpenAiCompatClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("API {} {}: {}", status.as_u16(), url, text));
+            return Err(anyhow!("API {} {}: {}", status.as_u16(), self.url, text));
         }
 
         let parsed: WireResponse = serde_json::from_str(&text)
