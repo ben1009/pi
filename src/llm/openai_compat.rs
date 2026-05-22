@@ -15,7 +15,11 @@ fn truncate(s: &str, max: usize) -> String {
             .take_while(|&i| i <= max)
             .last()
             .unwrap_or(0);
-        format!("{}\n... <truncated, {} more bytes>", &s[..cut], s.len() - cut)
+        format!(
+            "{}\n... <truncated, {} more bytes>",
+            &s[..cut],
+            s.len() - cut
+        )
     }
 }
 
@@ -90,9 +94,8 @@ impl LlmClient for OpenAiCompatClient {
             ));
         }
 
-        let parsed: WireResponse = serde_json::from_str(&text).map_err(|e| {
-            anyhow!("decode response: {e}\nbody: {}", truncate(&text, 2000))
-        })?;
+        let parsed: WireResponse = serde_json::from_str(&text)
+            .map_err(|e| anyhow!("decode response: {e}\nbody: {}", truncate(&text, 2000)))?;
 
         let choice = parsed
             .choices

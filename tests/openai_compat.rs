@@ -1,9 +1,12 @@
+use pi::llm::{
+    ChatRequest, LlmClient, Message, Role, ToolCall, ToolCallFunction,
+    openai_compat::OpenAiCompatClient,
+};
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-
-use pi::llm::openai_compat::OpenAiCompatClient;
-use pi::llm::{ChatRequest, LlmClient, Message, Role, ToolCall, ToolCallFunction};
+use wiremock::{
+    Mock, MockServer, Request, ResponseTemplate,
+    matchers::{method, path},
+};
 
 fn req(model: &str, messages: Vec<Message>) -> ChatRequest {
     ChatRequest {
@@ -64,11 +67,13 @@ async fn tool_call_round_trip() {
 
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(assistant_tool_call(
-            "call_1",
-            "bash",
-            "{\"command\":\"echo hi\"}",
-        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(assistant_tool_call(
+                "call_1",
+                "bash",
+                "{\"command\":\"echo hi\"}",
+            )),
+        )
         .up_to_n_times(1)
         .mount(&server)
         .await;
@@ -154,7 +159,10 @@ async fn tool_call_round_trip() {
     let has_tool_role = messages_arr
         .iter()
         .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"));
-    assert!(has_tool_role, "second request must include a tool-role message");
+    assert!(
+        has_tool_role,
+        "second request must include a tool-role message"
+    );
 }
 
 #[tokio::test]
@@ -173,7 +181,10 @@ async fn api_error_body_truncation() {
         .await
         .expect_err("should error on 500");
     let msg = format!("{err:#}");
-    assert!(msg.contains(&server.uri()), "error should include URL: {msg}");
+    assert!(
+        msg.contains(&server.uri()),
+        "error should include URL: {msg}"
+    );
     assert!(
         msg.contains("truncated"),
         "error should mention truncation: {msg}"

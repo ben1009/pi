@@ -2,15 +2,16 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use rustyline::DefaultEditor;
-use rustyline::config::Configurer;
-use rustyline::error::ReadlineError;
-
-use pi::config::{self, ConfigError, ResolveInput, ResolvedConfig};
-use pi::llm::openai_compat::OpenAiCompatClient;
-use pi::llm::{ChatRequest, ChatResponse, LlmClient, Message, Role, Usage};
-use pi::system_prompt;
-use pi::tools::{Registry, ToolCtx};
+use pi::{
+    config::{self, ConfigError, ResolveInput, ResolvedConfig},
+    llm::{
+        ChatRequest, ChatResponse, LlmClient, Message, Role, Usage,
+        openai_compat::OpenAiCompatClient,
+    },
+    system_prompt,
+    tools::{Registry, ToolCtx},
+};
+use rustyline::{DefaultEditor, config::Configurer, error::ReadlineError};
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "a multi-LLM coding agent", version)]
@@ -148,12 +149,14 @@ async fn repl(
     mut messages: Vec<Message>,
 ) -> Result<i32> {
     let history_path = history_path();
-    if let Some(p) = &history_path {
-        if let Some(parent) = p.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("pi: warning: could not create history dir {}: {e}", parent.display());
-            }
-        }
+    if let Some(p) = &history_path
+        && let Some(parent) = p.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "pi: warning: could not create history dir {}: {e}",
+            parent.display()
+        );
     }
 
     let mut rl = DefaultEditor::new()?;
@@ -276,16 +279,16 @@ async fn drive(
 
     for _ in 0..cfg.max_turns {
         let resp = send_full(client, cfg, registry, messages).await?;
-        let calls = resp
-            .message
-            .tool_calls
-            .clone()
-            .unwrap_or_default();
+        let calls = resp.message.tool_calls.clone().unwrap_or_default();
 
         if calls.is_empty() {
             // Don't pollute history with an empty assistant turn — the next
             // request would 400 on most OpenAI-compat servers.
-            let has_content = resp.message.content.as_deref().is_some_and(|s| !s.is_empty());
+            let has_content = resp
+                .message
+                .content
+                .as_deref()
+                .is_some_and(|s| !s.is_empty());
             if has_content {
                 messages.push(resp.message.clone());
             }

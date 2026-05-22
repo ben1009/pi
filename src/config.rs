@@ -6,7 +6,10 @@ pub enum ConfigError {
     #[error("unknown provider: {0}")]
     UnknownProvider(String),
     #[error("missing API key: set ${env} for provider '{provider}'")]
-    MissingKey { env: &'static str, provider: &'static str },
+    MissingKey {
+        env: &'static str,
+        provider: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
