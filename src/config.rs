@@ -77,23 +77,32 @@ pub struct ResolvedConfig {
     pub api_key: String,
     pub base_url: String,
     pub max_tokens: u32,
+    pub yolo: bool,
+    pub max_turns: u32,
+    pub max_tool_output: usize,
 }
 
-pub fn resolve(
-    provider: Option<&str>,
-    model: Option<&str>,
-    max_tokens: Option<u32>,
-) -> Result<ResolvedConfig, ConfigError> {
-    let provider = match provider {
+pub struct ResolveInput<'a> {
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub max_tokens: Option<u32>,
+    pub yolo: bool,
+    pub max_turns: u32,
+    pub max_tool_output: usize,
+}
+
+pub fn resolve(input: ResolveInput<'_>) -> Result<ResolvedConfig, ConfigError> {
+    let provider = match input.provider {
         Some(s) => Provider::parse(s)?,
         None => Provider::Anthropic,
     };
 
-    let model = model
+    let model = input
+        .model
         .map(str::to_owned)
         .unwrap_or_else(|| provider.default_model().to_owned());
 
-    let max_tokens = max_tokens.unwrap_or(8192);
+    let max_tokens = input.max_tokens.unwrap_or(8192);
 
     let api_key = std::env::var(provider.api_key_env())
         .ok()
@@ -110,5 +119,8 @@ pub fn resolve(
         api_key,
         base_url: provider.base_url().to_owned(),
         max_tokens,
+        yolo: input.yolo,
+        max_turns: input.max_turns,
+        max_tool_output: input.max_tool_output,
     })
 }

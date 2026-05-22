@@ -1,5 +1,7 @@
 mod config;
+mod confirm;
 mod llm;
+mod tools;
 
 use std::io::Write;
 
@@ -7,9 +9,10 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::config::{ConfigError, ResolvedConfig};
+use crate::config::{ConfigError, ResolveInput, ResolvedConfig};
 use crate::llm::openai_compat::OpenAiCompatClient;
-use crate::llm::{ChatRequest, ChatResponse, LlmClient, Message};
+use crate::llm::{ChatRequest, ChatResponse, LlmClient, Message, Role, Usage};
+use crate::tools::{Registry, ToolCtx, truncate};
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "a multi-LLM coding agent", version)]
@@ -25,6 +28,18 @@ struct Cli {
     /// Max output tokens
     #[arg(long, env = "PI_MAX_TOKENS")]
     max_tokens: Option<u32>,
+
+    /// Skip y/n confirmations on bash and out-of-CWD writes/edits.
+    #[arg(short = 'y', long)]
+    yolo: bool,
+
+    /// Cap on tool-use iterations per user turn.
+    #[arg(long, env = "PI_MAX_TURNS", default_value_t = 50)]
+    max_turns: u32,
+
+    /// Per-tool-result character cap (excess truncated).
+    #[arg(long, env = "PI_MAX_TOOL_OUTPUT", default_value_t = 100_000)]
+    max_tool_output: usize,
 
     /// One-shot prompt: send, print final assistant text, exit.
     #[arg(short = 'p', long)]
@@ -47,11 +62,14 @@ async fn main() {
         return;
     }
 
-    let cfg = match config::resolve(
-        cli.provider.as_deref(),
-        cli.model.as_deref(),
-        cli.max_tokens,
-    ) {
+    let cfg = match config::resolve(ResolveInput {
+        provider: cli.provider.as_deref(),
+        model: cli.model.as_deref(),
+        max_tokens: cli.max_tokens,
+        yolo: cli.yolo,
+        max_turns: cli.max_turns,
+        max_tool_output: cli.max_tool_output,
+    }) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("pi: {e}");
@@ -84,7 +102,6 @@ fn system_prompt() -> String {
     )
 }
 
-// Lightweight UTC date (YYYY-MM-DD) without pulling in chrono.
 fn today_utc() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -96,7 +113,6 @@ fn today_utc() -> String {
 }
 
 fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
-    // Algorithm by Howard Hinnant: civil_from_days. Days since 1970-01-01.
     days += 719_468;
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
     let doe = (days - era * 146_097) as u64;
@@ -110,8 +126,13 @@ fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
     (y as i32, m, d)
 }
 
+struct ReplState {
+    last_usage: Option<Usage>,
+}
+
 async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
     let client = OpenAiCompatClient::new(cfg.base_url.clone(), cfg.api_key.clone());
+    let registry = Registry::with_defaults();
     let mut messages = vec![Message::system(system_prompt())];
 
     eprintln!(
@@ -123,8 +144,8 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
 
     if let Some(prompt) = one_shot {
         messages.push(Message::user(prompt));
-        match send_full(&client, &cfg, &messages).await {
-            Ok(resp) => {
+        match drive(&client, &cfg, &registry, &mut messages).await {
+            Ok(Some(resp)) => {
                 let text = resp.message.content.as_deref().unwrap_or("");
                 if !text.is_empty() {
                     println!("{text}");
@@ -139,19 +160,29 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
                 }
                 0
             }
+            Ok(None) => {
+                eprintln!("pi: max turns reached");
+                EXIT_API_OR_TURNS
+            }
             Err(e) => {
                 eprintln!("pi: {e}");
                 EXIT_API_OR_TURNS
             }
         }
     } else {
-        repl(&client, &cfg, messages).await
+        repl(&client, &cfg, &registry, messages).await
     }
 }
 
-async fn repl(client: &OpenAiCompatClient, cfg: &ResolvedConfig, mut messages: Vec<Message>) -> i32 {
+async fn repl(
+    client: &OpenAiCompatClient,
+    cfg: &ResolvedConfig,
+    registry: &Registry,
+    mut messages: Vec<Message>,
+) -> i32 {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
+    let mut state = ReplState { last_usage: None };
 
     loop {
         print!("> ");
@@ -174,54 +205,140 @@ async fn repl(client: &OpenAiCompatClient, cfg: &ResolvedConfig, mut messages: V
             "/exit" | "/quit" => return 0,
             "/clear" => {
                 messages.truncate(1); // keep system prompt
+                state.last_usage = None;
                 eprintln!("pi: cleared.");
+                continue;
+            }
+            "/tokens" => {
+                match &state.last_usage {
+                    Some(u) => println!(
+                        "prompt={} completion={} total={}",
+                        u.prompt_tokens, u.completion_tokens, u.total_tokens
+                    ),
+                    None => println!("(no usage yet)"),
+                }
                 continue;
             }
             _ => {}
         }
 
         messages.push(Message::user(line));
-        match send(client, cfg, &messages).await {
-            Ok(reply) => {
-                let text = reply.content.as_deref().unwrap_or("");
+        match drive(client, cfg, registry, &mut messages).await {
+            Ok(Some(resp)) => {
+                if let Some(u) = &resp.usage {
+                    state.last_usage = Some(u.clone());
+                }
+                let text = resp.message.content.as_deref().unwrap_or("");
                 if !text.is_empty() {
                     println!("{text}");
-                }
-                let has_tool_calls = reply.tool_calls.as_ref().is_some_and(|c| !c.is_empty());
-                if text.is_empty() && !has_tool_calls {
-                    // Don't pollute history with an empty assistant turn — many
-                    // OpenAI-compat servers reject the next request if assistant
-                    // content is None and no tool_calls are present.
-                    eprintln!("pi: model produced no text");
                 } else {
-                    messages.push(reply);
+                    eprintln!("pi: model produced no text");
                 }
+            }
+            Ok(None) => {
+                eprintln!("pi: max turns reached");
             }
             Err(e) => {
                 eprintln!("pi: {e}");
-                messages.pop(); // drop failed turn so retry doesn't duplicate
+                // Drop the failed user turn so retry doesn't pile up.
+                while let Some(last) = messages.last() {
+                    match last.role {
+                        Role::User => {
+                            messages.pop();
+                            break;
+                        }
+                        _ => {
+                            messages.pop();
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-async fn send(
+/// Run the tool-use loop until the model returns an assistant turn with no tool
+/// calls, or `max_turns` is exhausted. The terminal assistant message is left
+/// on `messages` and also returned for display/usage.
+///
+/// Returns:
+///   Ok(Some(resp)) — model produced a final assistant message.
+///   Ok(None)       — max_turns reached.
+///   Err(e)         — API or fatal error.
+async fn drive(
     client: &OpenAiCompatClient,
     cfg: &ResolvedConfig,
-    messages: &[Message],
-) -> Result<Message> {
-    Ok(send_full(client, cfg, messages).await?.message)
+    registry: &Registry,
+    messages: &mut Vec<Message>,
+) -> Result<Option<ChatResponse>> {
+    let tool_ctx = ToolCtx {
+        yolo: cfg.yolo,
+        max_output: cfg.max_tool_output,
+    };
+
+    for _ in 0..cfg.max_turns {
+        let resp = send_full(client, cfg, registry, messages).await?;
+        let calls = resp
+            .message
+            .tool_calls
+            .clone()
+            .unwrap_or_default();
+
+        if calls.is_empty() {
+            messages.push(resp.message.clone());
+            return Ok(Some(resp));
+        }
+
+        messages.push(resp.message.clone());
+
+        for call in calls {
+            let content = match registry.get(&call.function.name) {
+                None => format!("Error: unknown tool '{}'", call.function.name),
+                Some(tool) => {
+                    let args: serde_json::Value =
+                        match serde_json::from_str(&call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let msg = format!(
+                                    "Error: invalid JSON arguments for '{}': {e}",
+                                    call.function.name
+                                );
+                                messages.push(tool_message(&call.id, msg));
+                                continue;
+                            }
+                        };
+                    match tool.run(tool_ctx, args).await {
+                        Ok(s) => s,
+                        Err(e) => format!("Error: {} failed: {e}", call.function.name),
+                    }
+                }
+            };
+            messages.push(tool_message(&call.id, truncate(content, cfg.max_tool_output)));
+        }
+    }
+
+    Ok(None)
+}
+
+fn tool_message(id: &str, content: String) -> Message {
+    Message {
+        role: Role::Tool,
+        content: Some(content),
+        tool_calls: None,
+        tool_call_id: Some(id.to_owned()),
+    }
 }
 
 async fn send_full(
     client: &OpenAiCompatClient,
     cfg: &ResolvedConfig,
+    registry: &Registry,
     messages: &[Message],
 ) -> Result<ChatResponse> {
     let req = ChatRequest {
         model: cfg.model.clone(),
         messages: messages.to_vec(),
-        tools: Vec::new(),
+        tools: registry.definitions(),
         max_tokens: cfg.max_tokens,
     };
     client.complete(req).await
