@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use super::{Tool, ToolCtx, truncate};
@@ -90,19 +91,11 @@ impl Tool for BashTool {
         };
 
         let stdout_bytes = match stdout {
-            Some(mut s) => {
-                let mut buf = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await.ok();
-                buf
-            }
+            Some(s) => read_capped(s, ctx.max_output * 2).await,
             None => Vec::new(),
         };
         let stderr_bytes = match stderr {
-            Some(mut s) => {
-                let mut buf = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut s, &mut buf).await.ok();
-                buf
-            }
+            Some(s) => read_capped(s, ctx.max_output * 2).await,
             None => Vec::new(),
         };
 
@@ -124,4 +117,17 @@ impl Tool for BashTool {
         };
         Ok(truncate(format!("{header}{combined}"), ctx.max_output))
     }
+}
+
+/// Read up to `cap` bytes from `r`, draining anything beyond the cap so the
+/// child's pipe buffer doesn't block its writes. We don't care about the
+/// excess — `truncate()` would discard it anyway, and capping here bounds
+/// memory for runaway commands like `cat /dev/urandom`.
+async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(cap.min(8192));
+    let mut limited = (&mut r).take(cap as u64);
+    let _ = limited.read_to_end(&mut buf).await;
+    let mut sink = tokio::io::sink();
+    let _ = tokio::io::copy(&mut r, &mut sink).await;
+    buf
 }

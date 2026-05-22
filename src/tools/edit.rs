@@ -63,8 +63,8 @@ impl Tool for EditTool {
             Ok(b) => b,
             Err(e) => return Ok(format!("Error: read {}: {e}", inp.path)),
         };
-        let text = match std::str::from_utf8(&bytes) {
-            Ok(s) => s.to_owned(),
+        let text = match String::from_utf8(bytes) {
+            Ok(s) => s,
             Err(_) => return Ok(format!("Error: {} is not valid UTF-8", inp.path)),
         };
 
