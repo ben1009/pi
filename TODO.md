@@ -58,7 +58,9 @@ Pre-v1, in priority order.
   Profile a real long session to confirm or refute.
 - **Streaming bash output.** Today we capture-then-return; long-running
   commands look frozen. Stream stdout to the user as it arrives, then
-  send the captured tail as the tool result.
+  send the captured tail as the tool result. Keep the post-cap pipe
+  drain and reader-task abort guarantees from the existing tool — they
+  are load-bearing for crash safety.
 - **rustyline buffer restore on API error.** Round-2 PR #2 reviewer
   suggestion: on retry, prefill the readline buffer with the last
   failed input via `readline_with_initial`. Currently the user retypes.
