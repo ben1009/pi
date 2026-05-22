@@ -74,6 +74,13 @@ impl Tool for BashTool {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
+        // Drain pipes concurrently with wait(). If the child writes more than
+        // ~64KB (the OS pipe buffer) it blocks on write() until someone reads,
+        // so reading sequentially after wait() would deadlock.
+        let cap = ctx.max_output * 2;
+        let stdout_task = stdout.map(|s| tokio::spawn(read_capped(s, cap)));
+        let stderr_task = stderr.map(|s| tokio::spawn(read_capped(s, cap)));
+
         let status = match tokio::time::timeout(
             Duration::from_millis(timeout_ms),
             child.wait(),
@@ -86,16 +93,18 @@ impl Tool for BashTool {
                 // running and can mutate state. Kill and reap before returning.
                 let _ = child.start_kill();
                 let _ = child.wait().await;
+                if let Some(t) = stdout_task { let _ = t.await; }
+                if let Some(t) = stderr_task { let _ = t.await; }
                 return Ok(format!("Error: bash command timed out after {timeout_ms}ms (child killed)"));
             }
         };
 
-        let stdout_bytes = match stdout {
-            Some(s) => read_capped(s, ctx.max_output * 2).await,
+        let stdout_bytes = match stdout_task {
+            Some(t) => t.await.unwrap_or_default(),
             None => Vec::new(),
         };
-        let stderr_bytes = match stderr {
-            Some(s) => read_capped(s, ctx.max_output * 2).await,
+        let stderr_bytes = match stderr_task {
+            Some(t) => t.await.unwrap_or_default(),
             None => Vec::new(),
         };
 
