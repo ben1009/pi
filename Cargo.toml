@@ -1,10 +1,18 @@
 [package]
-name = "pi"
+name = "pi-rs"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "A multi-LLM coding agent CLI (OpenAI / Anthropic / Gemini / DeepSeek / Kimi)."
 repository = "https://github.com/ben1009/pi-rs"
+
+[[bin]]
+name = "pi"
+path = "src/main.rs"
+
+[lib]
+name = "pi"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
