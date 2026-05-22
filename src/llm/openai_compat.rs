@@ -4,6 +4,21 @@ use serde::{Deserialize, Serialize};
 
 use super::{ChatRequest, ChatResponse, LlmClient, Message, ToolDef, Usage};
 
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_owned()
+    } else {
+        // char_indices to avoid splitting a UTF-8 codepoint at the boundary.
+        let cut = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max)
+            .last()
+            .unwrap_or(0);
+        format!("{}\n... <truncated, {} more bytes>", &s[..cut], s.len() - cut)
+    }
+}
+
 pub struct OpenAiCompatClient {
     url: String,
     api_key: String,
@@ -65,7 +80,12 @@ impl LlmClient for OpenAiCompatClient {
         let status = resp.status();
         let text = resp.text().await?;
         if !status.is_success() {
-            return Err(anyhow!("API {} {}: {}", status.as_u16(), self.url, text));
+            return Err(anyhow!(
+                "API {} {}: {}",
+                status.as_u16(),
+                self.url,
+                truncate(&text, 2000)
+            ));
         }
 
         let parsed: WireResponse = serde_json::from_str(&text)
