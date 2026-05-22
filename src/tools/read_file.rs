@@ -6,8 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::fs;
 
-use super::write_file::is_outside_cwd;
-use super::{Tool, ToolCtx, truncate};
+use super::{Tool, ToolCtx, truncate, write_file::is_outside_cwd};
 use crate::confirm::confirm;
 
 const DEFAULT_LIMIT: usize = 2000;
@@ -48,17 +47,18 @@ impl Tool for ReadTool {
     }
 
     async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
-        let inp: Input = serde_json::from_value(input)
-            .map_err(|e| anyhow!("read: invalid input: {e}"))?;
+        let inp: Input =
+            serde_json::from_value(input).map_err(|e| anyhow!("read: invalid input: {e}"))?;
         let path = PathBuf::from(&inp.path);
 
         // Same CWD-boundary policy as write/edit: confirm if reading outside
         // CWD when --yolo is off, since `read` exfiltrates contents to the
         // model provider.
-        if !ctx.yolo && is_outside_cwd(&path) {
-            if !confirm(&format!("read outside CWD: {}", path.display())).await? {
-                return Ok("Error: user denied read".to_owned());
-            }
+        if !ctx.yolo
+            && is_outside_cwd(&path)
+            && !confirm(&format!("read outside CWD: {}", path.display())).await?
+        {
+            return Ok("Error: user denied read".to_owned());
         }
 
         let bytes = match fs::read(&path).await {

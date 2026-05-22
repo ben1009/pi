@@ -1,12 +1,13 @@
-use std::process::Stdio;
-use std::time::Duration;
+use std::{process::Stdio, time::Duration};
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::Command,
+};
 
 use super::{Tool, ToolCtx, truncate};
 use crate::confirm::confirm;
@@ -52,9 +53,12 @@ impl Tool for BashTool {
     }
 
     async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
-        let inp: Input = serde_json::from_value(input)
-            .map_err(|e| anyhow!("bash: invalid input: {e}"))?;
-        let timeout_ms = inp.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+        let inp: Input =
+            serde_json::from_value(input).map_err(|e| anyhow!("bash: invalid input: {e}"))?;
+        let timeout_ms = inp
+            .timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
 
         if !ctx.yolo && !confirm(&format!("run bash: {}", inp.command)).await? {
             return Ok("Error: user denied bash execution".to_owned());
@@ -82,22 +86,22 @@ impl Tool for BashTool {
         let cap = ctx.max_output.saturating_mul(2);
         let stdout_task = stdout.map(|s| tokio::spawn(read_capped(s, cap)));
 
-        let status = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            child.wait(),
-        )
-        .await
-        {
-            Ok(r) => r.map_err(|e| anyhow!("bash: wait failed: {e}"))?,
-            Err(_) => {
-                // tokio::time::timeout only drops the future; the child keeps
-                // running and can mutate state. Kill and reap before returning.
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                if let Some(t) = stdout_task { t.abort(); }
-                return Ok(format!("Error: bash command timed out after {timeout_ms}ms (child killed)"));
-            }
-        };
+        let status =
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait()).await {
+                Ok(r) => r.map_err(|e| anyhow!("bash: wait failed: {e}"))?,
+                Err(_) => {
+                    // tokio::time::timeout only drops the future; the child keeps
+                    // running and can mutate state. Kill and reap before returning.
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    if let Some(t) = stdout_task {
+                        t.abort();
+                    }
+                    return Ok(format!(
+                        "Error: bash command timed out after {timeout_ms}ms (child killed)"
+                    ));
+                }
+            };
 
         // Child has exited but the pipe fd may have been leaked to a daemon
         // (e.g. `nohup foo &`). Bound the drain so we don't hang on the leaked
@@ -132,7 +136,9 @@ async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
 /// fd holding the writer side open), abort the handle so the task doesn't
 /// linger detached.
 async fn drain_or_abort(task: Option<tokio::task::JoinHandle<Vec<u8>>>) -> Vec<u8> {
-    let Some(mut handle) = task else { return Vec::new() };
+    let Some(mut handle) = task else {
+        return Vec::new();
+    };
     match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
         Ok(res) => res.unwrap_or_default(),
         Err(_) => {

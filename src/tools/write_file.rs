@@ -42,22 +42,25 @@ impl Tool for WriteTool {
     }
 
     async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
-        let inp: Input = serde_json::from_value(input)
-            .map_err(|e| anyhow!("write: invalid input: {e}"))?;
+        let inp: Input =
+            serde_json::from_value(input).map_err(|e| anyhow!("write: invalid input: {e}"))?;
         let path = PathBuf::from(&inp.path);
 
-        if !ctx.yolo && is_outside_cwd(&path) {
-            if !confirm(&format!("write outside CWD: {}", path.display())).await? {
-                return Ok("Error: user denied write".to_owned());
-            }
+        if !ctx.yolo
+            && is_outside_cwd(&path)
+            && !confirm(&format!("write outside CWD: {}", path.display())).await?
+        {
+            return Ok("Error: user denied write".to_owned());
         }
 
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(e) = fs::create_dir_all(parent).await {
-                    return Ok(format!("Error: create parent dir {}: {e}", parent.display()));
-                }
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = fs::create_dir_all(parent).await
+        {
+            return Ok(format!(
+                "Error: create parent dir {}: {e}",
+                parent.display()
+            ));
         }
 
         match fs::write(&path, inp.content.as_bytes()).await {

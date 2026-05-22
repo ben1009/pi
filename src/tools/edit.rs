@@ -6,8 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::fs;
 
-use super::write_file::is_outside_cwd;
-use super::{Tool, ToolCtx};
+use super::{Tool, ToolCtx, write_file::is_outside_cwd};
 use crate::confirm::confirm;
 
 pub struct EditTool;
@@ -49,14 +48,15 @@ impl Tool for EditTool {
     }
 
     async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
-        let inp: Input = serde_json::from_value(input)
-            .map_err(|e| anyhow!("edit: invalid input: {e}"))?;
+        let inp: Input =
+            serde_json::from_value(input).map_err(|e| anyhow!("edit: invalid input: {e}"))?;
         let path = PathBuf::from(&inp.path);
 
-        if !ctx.yolo && is_outside_cwd(&path) {
-            if !confirm(&format!("edit outside CWD: {}", path.display())).await? {
-                return Ok("Error: user denied edit".to_owned());
-            }
+        if !ctx.yolo
+            && is_outside_cwd(&path)
+            && !confirm(&format!("edit outside CWD: {}", path.display())).await?
+        {
+            return Ok("Error: user denied edit".to_owned());
         }
 
         let bytes = match fs::read(&path).await {
@@ -104,7 +104,11 @@ impl Tool for EditTool {
 /// Best-effort hint when an exact match fails: find lines whose first non-blank
 /// content overlaps the first non-blank line of `needle`, return up to `n` of them.
 fn nearest_lines(haystack: &str, needle: &str, n: usize) -> String {
-    let needle_first = needle.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let needle_first = needle
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     if needle_first.is_empty() {
         return "  (no hints available)".to_owned();
     }

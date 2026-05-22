@@ -1,0 +1,31 @@
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: '7 7 * * *'
+name: Rolling
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    name: ubuntu / nightly
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@655bc29a221a62ee6edb6a0fa9d9530cf424d31d # nightly
+      - name: cargo generate-lockfile
+        if: hashFiles('Cargo.lock') == ''
+        run: cargo generate-lockfile
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest --locked
+        run: cargo +nightly nextest run --locked --all-features --all-targets

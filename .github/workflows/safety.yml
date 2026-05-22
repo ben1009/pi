@@ -1,0 +1,43 @@
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+name: Safety
+jobs:
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install nightly
+        uses: dtolnay/rust-toolchain@655bc29a221a62ee6edb6a0fa9d9530cf424d31d # nightly
+      - run: |
+            # to get the symbolizer for debug symbol resolution
+            sudo apt install llvm
+            # Append a dev profile with opt-level=1 so debug symbols survive.
+            {
+              echo ''
+              echo '[profile.dev]'
+              echo 'opt-level = 1'
+            } >> Cargo.toml
+            cat Cargo.toml
+        name: Enable debug symbols
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo +nightly test -Zsanitizer=address
+        # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
+        run: cargo +nightly test --lib --tests --all-features --target x86_64-unknown-linux-gnu
+        env:
+          ASAN_OPTIONS: "detect_odr_violation=0:detect_leaks=0"
+          RUSTFLAGS: "-Z sanitizer=address"
+      - name: cargo test -Zsanitizer=leak
+        if: always()
+        run: cargo +nightly test --all-features --target x86_64-unknown-linux-gnu
+        env:
+          RUSTFLAGS: "-Z sanitizer=leak"

@@ -1,0 +1,73 @@
+permissions:
+  contents: read
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: nightly-2026-05-12
+
+name: Check
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    name: fmt
+    permissions:
+      contents: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    name: clippy
+    permissions:
+      contents: read
+      checks: write
+    strategy:
+      fail-fast: false
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --all-targets -- -D warnings
+
+  typos:
+    runs-on: ubuntu-latest
+    name: typos
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check spelling
+        uses: crate-ci/typos@master

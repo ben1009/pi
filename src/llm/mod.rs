@@ -33,6 +33,7 @@ impl Message {
             tool_call_id: None,
         }
     }
+
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
