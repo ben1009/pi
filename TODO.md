@@ -14,9 +14,10 @@ Pre-v1, in priority order.
   PRs without it. Pick MIT or Apache-2.0, drop a `LICENSE` file at repo
   root, mention in README and `Cargo.toml`.
 - **CI.** `.github/workflows/ci.yml` running `cargo fmt --check`,
-  `cargo clippy -- -D warnings`, `cargo test` on push and PR. No live-API
-  jobs (wiremock covers the network surface). Add a status badge to
-  README.
+  `cargo clippy -- -D warnings`, `cargo test` on push and PR. Run on
+  both Linux and macOS so platform-specific paths (bash spawn, dirs
+  resolution, canonicalize) get exercised. No live-API jobs (wiremock
+  covers the network surface). Add a status badge to README.
 
 ## Next
 
@@ -28,7 +29,9 @@ Pre-v1, in priority order.
   prompt; tool calls arrive in deltas, need accumulation.
 - **Conversation `/resume`.** Persist message history per session
   (`$XDG_DATA_HOME/pi/sessions/<id>.json`); `pi --resume <id>` reloads.
-  Also enables a `/save` slash command.
+  Pair with `pi --sessions` (and a `/sessions` slash command) that
+  lists IDs with first-prompt + timestamp so users don't have to
+  remember UUIDs. Also enables a `/save` slash command.
 - **Native Anthropic adapter.** Prompt caching headers
   (`cache_control: ephemeral` on system prompt + tool list) cut cost
   significantly across multi-turn sessions. Implement as a second
