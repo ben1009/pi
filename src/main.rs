@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use pi_rs::{
     config::{self, ConfigError, ResolveInput, ResolvedConfig},
     days_to_ymd,
     llm::{
-        ChatRequest, ChatResponse, LlmClient, Message, Role, Usage,
+        ChatRequest, ChatResponse, LlmClient, Message, Role, StreamEvent, Usage,
         openai_compat::OpenAiCompatClient,
     },
     session, system_prompt,
@@ -363,10 +363,10 @@ async fn repl(
                 if let Some(u) = &resp.usage {
                     state.last_usage = Some(u.clone());
                 }
+                // In streaming mode, content was already printed to stderr.
+                // Only print here for non-streaming (one-shot) mode.
                 let text = resp.message.content.as_deref().unwrap_or("");
-                if !text.is_empty() {
-                    println!("{text}");
-                } else {
+                if text.is_empty() && resp.message.tool_calls.is_none() {
                     eprintln!("pi-rs: model produced no text");
                 }
                 // Auto-save session after successful turn.
@@ -416,7 +416,11 @@ async fn drive(
     };
 
     for _ in 0..cfg.max_turns {
-        let resp = send_full(client, cfg, registry, messages).await?;
+        let resp = if stream_stderr {
+            send_streaming(client, cfg, registry, messages).await?
+        } else {
+            send_full(client, cfg, registry, messages).await?
+        };
         let calls = resp.message.tool_calls.clone().unwrap_or_default();
 
         if calls.is_empty() {
@@ -486,4 +490,105 @@ async fn send_full(
         max_tokens: cfg.max_tokens,
     };
     client.complete(req).await
+}
+
+/// Stream a chat completion, printing content deltas to stdout as they arrive.
+/// Accumulates tool call deltas into complete ToolCall structs.
+async fn send_streaming(
+    client: &OpenAiCompatClient,
+    cfg: &ResolvedConfig,
+    registry: &Registry,
+    messages: &[Message],
+) -> Result<ChatResponse> {
+    use std::collections::BTreeMap;
+
+    use tokio_stream::StreamExt;
+
+    let req = ChatRequest {
+        model: cfg.model.clone(),
+        messages: messages.to_vec(),
+        tools: registry.definitions(),
+        max_tokens: cfg.max_tokens,
+    };
+
+    let mut stream = client.complete_stream(req).await?;
+    let mut content = String::new();
+    let mut tool_calls: BTreeMap<usize, (String, String, String)> = BTreeMap::new(); // index -> (id, name, args)
+    let mut finish_reason = String::new();
+    let mut usage = None;
+
+    while let Some(event) = stream.next().await {
+        match event? {
+            StreamEvent::ContentDelta(text) => {
+                content.push_str(&text);
+                eprint!("{text}");
+            }
+            StreamEvent::ToolCallDelta {
+                index,
+                id,
+                function_name,
+                arguments_delta,
+            } => {
+                let entry = tool_calls.entry(index).or_default();
+                if let Some(id) = id {
+                    entry.0 = id;
+                }
+                if let Some(name) = function_name {
+                    entry.1 = name;
+                }
+                if let Some(args) = arguments_delta {
+                    entry.2.push_str(&args);
+                }
+            }
+            StreamEvent::Done {
+                finish_reason: reason,
+                usage: u,
+            } => {
+                finish_reason = reason;
+                usage = u;
+                break;
+            }
+            StreamEvent::Error(msg) => {
+                return Err(anyhow!("stream error: {msg}"));
+            }
+        }
+    }
+
+    // Flush newline after streaming content
+    if !content.is_empty() {
+        eprintln!();
+    }
+
+    let message = Message {
+        role: Role::Assistant,
+        content: if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        },
+        tool_calls: if tool_calls.is_empty() {
+            None
+        } else {
+            Some(
+                tool_calls
+                    .into_values()
+                    .map(|(id, name, args)| pi_rs::llm::ToolCall {
+                        id,
+                        kind: "function".to_owned(),
+                        function: pi_rs::llm::ToolCallFunction {
+                            name,
+                            arguments: args,
+                        },
+                    })
+                    .collect(),
+            )
+        },
+        tool_call_id: None,
+    };
+
+    Ok(ChatResponse {
+        message,
+        finish_reason,
+        usage,
+    })
 }

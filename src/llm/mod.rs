@@ -1,6 +1,9 @@
+use std::pin::Pin;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio_stream::Stream;
 
 pub mod openai_compat;
 
@@ -99,7 +102,31 @@ pub struct Usage {
     pub total_tokens: u32,
 }
 
+/// A single event from a streaming chat completion.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// A chunk of assistant text content.
+    ContentDelta(String),
+    /// A tool call being built (index, id, function name, argument chunk).
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        function_name: Option<String>,
+        arguments_delta: Option<String>,
+    },
+    /// Stream finished with a stop reason.
+    Done {
+        finish_reason: String,
+        usage: Option<Usage>,
+    },
+    /// An error occurred during streaming.
+    Error(String),
+}
+
+pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
+
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse>;
+    async fn complete_stream(&self, req: ChatRequest) -> Result<EventStream>;
 }
