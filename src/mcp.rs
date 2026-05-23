@@ -319,43 +319,29 @@ impl McpServer {
                 continue;
             }
 
-            let resp: JsonRpcResponse = match serde_json::from_str(trimmed) {
-                Ok(r) => r,
+            // Single message — parse and process.
+            let value: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
                 Err(e) => {
                     eprintln!("pi: warning: MCP JSON-RPC parse error: {e} line: {trimmed}");
                     continue;
                 }
             };
-
-            // Skip notifications (no id).
-            if resp.id.is_none() {
-                continue;
+            if let Some(resp) = self.process_response_value(value, id).await? {
+                return Ok(resp);
             }
-
-            // Server-initiated request — has an id but doesn't match ours.
-            // Send an error response to prevent deadlock.
-            if resp.id.as_ref() != Some(&serde_json::Value::Number(id.into())) {
-                if let Some(req_id) = &resp.id {
-                    // This is a server-initiated request; respond with method not found.
-                    let error_resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": { "code": -32601, "message": "Method not found" }
-                    });
-                    let msg = serde_json::to_string(&error_resp)?;
-                    self.send_line(&msg).await?;
-                }
-                continue;
-            }
-
-            if let Some(err) = resp.error {
-                return Err(anyhow!("MCP error {}: {}", err.code, err.message));
-            }
-
-            let result = resp.result.ok_or_else(|| anyhow!("MCP: no result"))?;
-            return serde_json::from_value(result)
-                .map_err(|e| anyhow!("MCP: failed to parse result: {e}"));
         }
+    }
+
+    /// Send a JSON-RPC error response for method not found.
+    async fn send_method_not_found(&mut self, req_id: &serde_json::Value) -> Result<()> {
+        let error_resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": { "code": -32601, "message": "Method not found" }
+        });
+        let msg = serde_json::to_string(&error_resp)?;
+        self.send_line(&msg).await
     }
 
     /// Process a single JSON-RPC response value from a batch or single message.
@@ -376,13 +362,7 @@ impl McpServer {
         // Server-initiated request — send error response to prevent deadlock.
         if resp.id.as_ref() != Some(&serde_json::Value::Number(expected_id.into())) {
             if let Some(req_id) = &resp.id {
-                let error_resp = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": { "code": -32601, "message": "Method not found" }
-                });
-                let msg = serde_json::to_string(&error_resp)?;
-                self.send_line(&msg).await?;
+                self.send_method_not_found(req_id).await?;
             }
             return Ok(None);
         }
