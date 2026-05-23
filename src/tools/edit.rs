@@ -160,3 +160,61 @@ fn line_similarity(a: &str, b: &str) -> f64 {
     let max_len = a.chars().count().max(b.chars().count());
     matching as f64 / max_len as f64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn similarity_identical() {
+        assert!((line_similarity("hello", "hello") - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn similarity_completely_different() {
+        assert!(line_similarity("abc", "xyz") < 0.1);
+    }
+
+    #[test]
+    fn similarity_empty_strings() {
+        assert_eq!(line_similarity("", "hello"), 0.0);
+        assert_eq!(line_similarity("hello", ""), 0.0);
+        assert_eq!(line_similarity("", ""), 0.0);
+    }
+
+    #[test]
+    fn similarity_partial_match() {
+        let score = line_similarity("hello world", "hello there");
+        assert!(score > 0.4);
+        assert!(score < 1.0);
+    }
+
+    #[test]
+    fn nearest_lines_finds_match() {
+        let haystack = "line one\nline two\nline three\nline four";
+        let result = nearest_lines(haystack, "line three", 1);
+        assert!(result.contains("3"));
+        assert!(result.contains("line three"));
+    }
+
+    #[test]
+    fn nearest_lines_no_match() {
+        let haystack = "abc\nxyz";
+        let result = nearest_lines(haystack, "zzzzzzzzzzzzzz", 3);
+        assert!(result.contains("no hints available"));
+    }
+
+    #[test]
+    fn nearest_lines_empty_needle() {
+        let result = nearest_lines("some text", "", 3);
+        assert!(result.contains("no hints available"));
+    }
+
+    #[test]
+    fn nearest_lines_multiple_results() {
+        let haystack = "alpha\ngamma\nbeta\ndelta\nepsilon";
+        let result = nearest_lines(haystack, "alpha", 3);
+        let lines: Vec<&str> = result.trim().lines().collect();
+        assert!(lines.len() <= 3);
+    }
+}
