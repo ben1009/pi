@@ -17,6 +17,50 @@ pub async fn confirm(prompt: &str) -> Result<bool> {
         Ok(buf)
     })
     .await??;
+    Ok(parse_confirm(&line))
+}
+
+fn parse_confirm(line: &str) -> bool {
     let ans = line.trim().to_ascii_lowercase();
-    Ok(matches!(ans.as_str(), "y" | "yes"))
+    matches!(ans.as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_confirm_yes_lowercase() {
+        assert!(parse_confirm("y"));
+        assert!(parse_confirm("yes"));
+    }
+
+    #[test]
+    fn parse_confirm_yes_uppercase() {
+        assert!(parse_confirm("Y"));
+        assert!(parse_confirm("YES"));
+        assert!(parse_confirm("Yes"));
+    }
+
+    #[test]
+    fn parse_confirm_no() {
+        assert!(!parse_confirm("n"));
+        assert!(!parse_confirm("no"));
+        assert!(!parse_confirm("N"));
+        assert!(!parse_confirm("NO"));
+    }
+
+    #[test]
+    fn parse_confirm_empty() {
+        assert!(!parse_confirm(""));
+        assert!(!parse_confirm("   "));
+        assert!(!parse_confirm("\n"));
+    }
+
+    #[test]
+    fn parse_confirm_other() {
+        assert!(!parse_confirm("maybe"));
+        assert!(!parse_confirm("1"));
+        assert!(!parse_confirm("yep"));
+    }
 }
