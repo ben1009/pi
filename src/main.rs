@@ -4,6 +4,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use pi_rs::{
     config::{self, ConfigError, ResolveInput, ResolvedConfig},
+    context::{ContextTracker, context_window},
     days_to_ymd,
     llm::{
         ChatRequest, ChatResponse, LlmClient, Message, Role, StreamEvent, Usage,
@@ -114,6 +115,7 @@ struct ReplState {
     last_usage: Option<Usage>,
     session_id: Option<String>,
     session_created_at: Option<String>,
+    ctx: ContextTracker,
 }
 
 async fn run(cfg: ResolvedConfig, one_shot: Option<String>, resume_id: Option<String>) -> i32 {
@@ -239,6 +241,7 @@ async fn repl(
         last_usage: None,
         session_id: initial_session_id,
         session_created_at: initial_created_at,
+        ctx: ContextTracker::new(context_window(cfg.provider, &cfg.model)),
     };
     let mut retry_input: Option<String> = None;
 
@@ -316,6 +319,7 @@ async fn repl(
                 state.last_usage = None;
                 state.session_id = None;
                 state.session_created_at = None;
+                state.ctx = ContextTracker::new(context_window(cfg.provider, &cfg.model));
                 eprintln!("pi-rs: cleared.");
                 continue;
             }
@@ -349,6 +353,29 @@ async fn repl(
                 }
                 continue;
             }
+            "/context" => {
+                let used = state.ctx.last_prompt_tokens();
+                let window = context_window(cfg.provider, &cfg.model);
+                if used == 0 {
+                    println!("(no usage yet)");
+                } else {
+                    let pct = (used as u64 * 100 / window as u64) as u32;
+                    println!("{used}/{window} tokens ({pct}%)");
+                }
+                continue;
+            }
+            "/compact" => {
+                match compact(client, cfg, registry, &mut messages).await {
+                    Ok(n) => {
+                        eprintln!("pi: compacted {n} messages into summary");
+                        state.ctx = ContextTracker::new(context_window(cfg.provider, &cfg.model));
+                        state.last_usage = None;
+                        save_session(&mut state, &messages, "auto-save");
+                    }
+                    Err(e) => eprintln!("pi-rs: compact failed: {e}"),
+                }
+                continue;
+            }
             _ => {}
         }
         // Persist actual prompts only — slash commands stay out of history.
@@ -362,6 +389,9 @@ async fn repl(
             Ok(Some(resp)) => {
                 if let Some(u) = &resp.usage {
                     state.last_usage = Some(u.clone());
+                    if let Some(warn) = state.ctx.update(u.prompt_tokens) {
+                        eprintln!("{warn}");
+                    }
                 }
                 // In streaming mode, content was already printed to stderr.
                 // Only print here for non-streaming (one-shot) mode.
@@ -591,4 +621,107 @@ async fn send_streaming(
         finish_reason,
         usage,
     })
+}
+
+/// Summarize the conversation history into a single message.
+/// Returns the number of messages that were compacted.
+async fn compact(
+    client: &OpenAiCompatClient,
+    cfg: &ResolvedConfig,
+    _registry: &Registry,
+    messages: &mut Vec<Message>,
+) -> Result<usize> {
+    let original_len = messages.len();
+    if original_len < 3 {
+        anyhow::bail!("nothing to compact (need at least 3 messages including system prompt)");
+    }
+    let non_system = original_len - 1; // exclude system prompt
+
+    // Build a fresh message list: system prompt + conversation dump + summarization request.
+    let history_text: String = messages
+        .iter()
+        .filter(|m| !matches!(m.role, Role::System))
+        .map(|m| {
+            let role = match m.role {
+                Role::User => "User",
+                Role::Assistant => "Assistant",
+                Role::Tool => "Tool",
+                Role::System => "System",
+            };
+            let mut parts = Vec::new();
+            if let Some(content) = &m.content
+                && !content.is_empty()
+            {
+                parts.push(content.clone());
+            }
+            if let Some(calls) = &m.tool_calls {
+                for tc in calls {
+                    parts.push(format!(
+                        "[tool_call: {}({})]",
+                        tc.function.name, tc.function.arguments
+                    ));
+                }
+            }
+            let text = parts.join("\n");
+            format!("[{role}]: {text}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // Truncate to avoid exceeding the summarization model's context window.
+    const MAX_HISTORY_CHARS: usize = 100_000;
+    let history_text = if history_text.len() > MAX_HISTORY_CHARS {
+        let truncated = &history_text[..history_text
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= MAX_HISTORY_CHARS)
+            .last()
+            .unwrap_or(0)];
+        format!(
+            "{truncated}\n... <truncated, {} more chars>",
+            history_text.len() - truncated.len()
+        )
+    } else {
+        history_text
+    };
+
+    let compact_messages = vec![
+        Message::system(
+            "You are a conversation summarizer. Produce a concise summary of the key facts, \
+             decisions, and pending tasks from the conversation below. Preserve file paths, \
+             function names, error messages, and any actionable context. Output only the summary, \
+             no preamble.",
+        ),
+        Message::user(format!("Summarize this conversation:\n\n{history_text}")),
+    ];
+
+    // Use non-streaming request without tools — summarization doesn't need them.
+    let req = ChatRequest {
+        model: cfg.model.clone(),
+        messages: compact_messages,
+        tools: vec![],
+        max_tokens: 4096,
+    };
+    let resp = client.complete(req).await?;
+
+    let summary = resp
+        .message
+        .content
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("model produced no summary"))?;
+
+    // Replace messages: keep system prompt + add summary as system context.
+    let system = messages
+        .iter()
+        .find(|m| matches!(m.role, Role::System))
+        .cloned()
+        .unwrap_or_else(|| Message::system(system_prompt()));
+    messages.clear();
+    messages.push(system);
+    messages.push(Message::system(format!(
+        "[Conversation summary — previous {non_system} messages compacted]\n\n{summary}"
+    )));
+
+    Ok(non_system)
 }
