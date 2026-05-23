@@ -19,9 +19,9 @@ pub fn sessions_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("pi-rs").join("sessions"))
 }
 
-/// Generate a new session ID (UUID v4, short form).
+/// Generate a new session ID (UUID v4, 16 hex chars = 64 bits).
 pub fn new_id() -> String {
-    uuid::Uuid::new_v4().to_string()[..8].to_owned()
+    uuid::Uuid::new_v4().to_string()[..16].to_owned()
 }
 
 /// Validate a session ID contains only hex characters.
