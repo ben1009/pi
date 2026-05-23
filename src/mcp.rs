@@ -435,8 +435,7 @@ pub struct McpTool {
 /// Sanitize a tool name for OpenAI-compatible function constraints.
 /// Replaces characters outside `[a-zA-Z0-9_-]` with `_` and truncates to 64 chars.
 fn sanitize_tool_name(name: &str) -> String {
-    let sanitized: String = name
-        .chars()
+    name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
                 c
@@ -444,12 +443,8 @@ fn sanitize_tool_name(name: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    if sanitized.len() > 64 {
-        sanitized[..64].to_owned()
-    } else {
-        sanitized
-    }
+        .take(64)
+        .collect()
 }
 
 impl McpTool {
