@@ -121,8 +121,12 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>, resume_id: Option<St
     let registry = Registry::with_defaults();
     let (mut messages, resume_created_at) = if let Some(id) = &resume_id {
         match session::load(id) {
-            Ok(s) => {
+            Ok(mut s) => {
                 eprintln!("pi: resumed session {id} ({} messages)", s.messages.len());
+                // Replace stale system prompt (old date/CWD) with a fresh one.
+                if !s.messages.is_empty() && matches!(s.messages[0].role, Role::System) {
+                    s.messages[0] = Message::system(system_prompt());
+                }
                 (s.messages, Some(s.created_at))
             }
             Err(e) => {
@@ -254,6 +258,7 @@ async fn repl(
             id,
             created_at,
             first_prompt: first,
+            // TODO: debounce auto-save or use Arc<[Message]> to avoid cloning on every turn.
             messages: messages.to_vec(),
         };
         match session::save(&sess) {

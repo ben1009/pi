@@ -86,7 +86,7 @@ pub fn list() -> Result<Vec<Session>> {
             }
         }
     }
-    // Sort newest first.
+    // Sort newest first. Relies on ISO 8601 format being lexicographically sortable.
     sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(sessions)
 }
