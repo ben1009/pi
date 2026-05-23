@@ -432,13 +432,33 @@ pub struct McpTool {
     server: std::sync::Arc<Mutex<McpServer>>,
 }
 
+/// Sanitize a tool name for OpenAI-compatible function constraints.
+/// Replaces characters outside `[a-zA-Z0-9_-]` with `_` and truncates to 64 chars.
+fn sanitize_tool_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.len() > 64 {
+        sanitized[..64].to_owned()
+    } else {
+        sanitized
+    }
+}
+
 impl McpTool {
     pub fn new(
         server_name: &str,
         mcp_tool: &McpToolDef,
         server: std::sync::Arc<Mutex<McpServer>>,
     ) -> Self {
-        let prefixed = format!("{}__{}", server_name, mcp_tool.name);
+        let prefixed = sanitize_tool_name(&format!("{}__{}", server_name, mcp_tool.name));
         let desc = mcp_tool
             .description
             .clone()
@@ -515,7 +535,15 @@ pub async fn connect_servers(
     use std::sync::Arc;
 
     let mut server_names = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
     for cfg in configs {
+        if !seen_names.insert(&cfg.name) {
+            eprintln!(
+                "pi: warning: duplicate MCP server name '{}', skipping",
+                cfg.name
+            );
+            continue;
+        }
         let mut server = match McpServer::connect(&cfg.command, &cfg.args, &cfg.env).await {
             Ok(s) => s,
             Err(e) => {
