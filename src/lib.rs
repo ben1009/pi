@@ -6,48 +6,6 @@ pub mod mcp;
 pub mod session;
 pub mod tools;
 
-/// Shared test utilities.
-#[cfg(test)]
-pub mod test_util {
-    use std::sync::Mutex;
-
-    /// Global lock for tests that mutate process-wide environment variables.
-    /// Shared across all modules to prevent cross-module race conditions.
-    pub static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// RAII guard that restores an environment variable on drop.
-    /// Safe to use in tests that may panic — cleanup always runs.
-    pub struct EnvGuard {
-        key: &'static str,
-        had_value: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Set an environment variable and return a guard that restores the old value.
-        pub fn set(key: &'static str, value: &str) -> Self {
-            let had_value = std::env::var(key).ok();
-            unsafe { std::env::set_var(key, value) };
-            Self { key, had_value }
-        }
-
-        /// Remove an environment variable and return a guard that restores the old value.
-        pub fn remove(key: &'static str) -> Self {
-            let had_value = std::env::var(key).ok();
-            unsafe { std::env::remove_var(key) };
-            Self { key, had_value }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match &self.had_value {
-                Some(v) => unsafe { std::env::set_var(self.key, v) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
-}
-
 pub fn system_prompt() -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -88,4 +46,46 @@ pub fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
     let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d)
+}
+
+/// Shared test utilities.
+#[cfg(test)]
+pub mod test_util {
+    use std::sync::Mutex;
+
+    /// Global lock for tests that mutate process-wide environment variables.
+    /// Shared across all modules to prevent cross-module race conditions.
+    pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that restores an environment variable on drop.
+    /// Safe to use in tests that may panic — cleanup always runs.
+    pub struct EnvGuard {
+        key: &'static str,
+        had_value: Option<String>,
+    }
+
+    impl EnvGuard {
+        /// Set an environment variable and return a guard that restores the old value.
+        pub fn set(key: &'static str, value: &str) -> Self {
+            let had_value = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            Self { key, had_value }
+        }
+
+        /// Remove an environment variable and return a guard that restores the old value.
+        pub fn remove(key: &'static str) -> Self {
+            let had_value = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, had_value }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.had_value {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
 }
