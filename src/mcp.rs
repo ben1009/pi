@@ -11,6 +11,19 @@ use tokio::{
 
 use crate::tools::{Tool, ToolCtx, truncate};
 
+// Global store for strings leaked by McpTool::new. Keeps them reachable so
+// leak sanitizers (e.g. -Z sanitizer=leak) do not report them.
+static MCP_TOOL_STRINGS: std::sync::LazyLock<std::sync::Mutex<Vec<&'static str>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// Leak a string for the process lifetime while keeping it reachable from a
+/// global root. This satisfies LeakSanitizer without changing the Tool trait.
+fn leak_string(s: String) -> &'static str {
+    let leaked: &'static str = Box::leak(s.into_boxed_str());
+    MCP_TOOL_STRINGS.lock().unwrap().push(leaked);
+    leaked
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 wire types
 // ---------------------------------------------------------------------------
@@ -461,8 +474,10 @@ impl McpTool {
         Self {
             // Leak once at construction — name and description are fixed for
             // the process lifetime, so this is a bounded one-time cost.
-            prefixed_name: Box::leak(prefixed.into_boxed_str()),
-            desc: Box::leak(desc.into_boxed_str()),
+            // leak_string keeps them reachable from a global root so leak
+            // sanitizers do not flag them.
+            prefixed_name: leak_string(prefixed),
+            desc: leak_string(desc),
             schema: mcp_tool.input_schema.clone(),
             remote_name: mcp_tool.name.clone(),
             server,

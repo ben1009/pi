@@ -16,7 +16,12 @@ pub struct Session {
 
 /// Directory where sessions are stored: `$XDG_DATA_HOME/pi-rs/sessions/`.
 pub fn sessions_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("pi-rs").join("sessions"))
+    // Respect XDG_DATA_HOME on all platforms so tests can redirect the
+    // sessions directory to a temp folder (macOS dirs::data_dir ignores it).
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::data_dir)
+        .map(|d| d.join("pi-rs").join("sessions"))
 }
 
 /// Generate a new session ID (UUID v4, 16 hex chars = 64 bits).
