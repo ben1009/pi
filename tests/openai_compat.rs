@@ -224,3 +224,231 @@ async fn missing_finish_reason_errors() {
 fn parse_body(req: &Request) -> Value {
     serde_json::from_slice(&req.body).expect("decode JSON body")
 }
+
+fn sse_content_delta(text: &str) -> String {
+    format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "choices": [{"delta": {"content": text}, "finish_reason": null}]
+        })
+    )
+}
+
+fn sse_done() -> &'static str {
+    "data: [DONE]\n\n"
+}
+
+#[tokio::test]
+async fn streaming_content() {
+    let server = MockServer::start().await;
+    let body = format!(
+        "{}{}{}",
+        sse_content_delta("hello "),
+        sse_content_delta("world"),
+        sse_done()
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(body)
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let mut stream = client
+        .complete_stream(req("m", vec![Message::user("hi")]))
+        .await
+        .unwrap();
+
+    use futures_util::StreamExt;
+    let mut texts = Vec::new();
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            pi_rs::llm::StreamEvent::ContentDelta(t) => texts.push(t),
+            pi_rs::llm::StreamEvent::Done { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(texts.join(""), "hello world");
+}
+
+#[tokio::test]
+async fn streaming_tool_calls() {
+    let server = MockServer::start().await;
+    let body = format!(
+        "{}{}{}{}",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"comm\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"and\\\":\\\"ls\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        sse_done()
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(body)
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let mut stream = client
+        .complete_stream(req("m", vec![Message::user("hi")]))
+        .await
+        .unwrap();
+
+    use futures_util::StreamExt;
+    let mut tool_calls: std::collections::BTreeMap<usize, (String, String, String)> =
+        std::collections::BTreeMap::new();
+    while let Some(event) = stream.next().await {
+        match event.unwrap() {
+            pi_rs::llm::StreamEvent::ToolCallDelta {
+                index,
+                id,
+                function_name,
+                arguments_delta,
+            } => {
+                let entry = tool_calls.entry(index).or_default();
+                if let Some(id) = id {
+                    entry.0 = id;
+                }
+                if let Some(name) = function_name {
+                    entry.1 = name;
+                }
+                if let Some(args) = arguments_delta {
+                    entry.2.push_str(&args);
+                }
+            }
+            pi_rs::llm::StreamEvent::Done { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(tool_calls.len(), 1);
+    let (id, name, args) = tool_calls.get(&0).unwrap();
+    assert_eq!(id, "call_1");
+    assert_eq!(name, "bash");
+    assert!(args.contains("ls"));
+}
+
+#[tokio::test]
+async fn streaming_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let result = client
+        .complete_stream(req("m", vec![Message::user("hi")]))
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn streaming_no_choices() {
+    let server = MockServer::start().await;
+    let body = format!(
+        "data: {}\n\n{}",
+        serde_json::json!({"choices": []}),
+        sse_done()
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(body)
+                .insert_header("content-type", "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let mut stream = client
+        .complete_stream(req("m", vec![Message::user("hi")]))
+        .await
+        .unwrap();
+
+    use futures_util::StreamExt;
+    let mut found_done = false;
+    while let Some(event) = stream.next().await {
+        if matches!(event.unwrap(), pi_rs::llm::StreamEvent::Done { .. }) {
+            found_done = true;
+            break;
+        }
+    }
+    assert!(found_done);
+}
+
+#[tokio::test]
+async fn complete_no_choices_errors() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": []
+        })))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let err = client
+        .complete(req("m", vec![Message::user("hi")]))
+        .await
+        .expect_err("should error on empty choices");
+    assert!(format!("{err:#}").contains("no choices"));
+}
+
+#[tokio::test]
+async fn complete_with_usage() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "ok" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "test-key".into());
+    let resp = client
+        .complete(req("m", vec![Message::user("hi")]))
+        .await
+        .unwrap();
+    assert!(resp.usage.is_some());
+    assert_eq!(resp.usage.unwrap().total_tokens, 15);
+}
+
+#[tokio::test]
+async fn complete_sends_bearer_auth() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(assistant_text("ok")))
+        .mount(&server)
+        .await;
+
+    let client = OpenAiCompatClient::new(server.uri(), "my-secret-key".into());
+    client
+        .complete(req("m", vec![Message::user("hi")]))
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let auth = requests[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(auth, "Bearer my-secret-key");
+}

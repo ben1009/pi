@@ -240,3 +240,85 @@ async fn read_capped_tee<R: AsyncRead + Unpin>(
     let _ = tokio::io::copy(&mut r, &mut sink).await;
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> ToolCtx {
+        ToolCtx {
+            yolo: true,
+            max_output: 1024 * 1024,
+            stream_stderr: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_simple_command() {
+        let input = serde_json::json!({"command": "echo hello"});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn bash_exit_code_nonzero() {
+        let input = serde_json::json!({"command": "exit 42"});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("[exit 42]"));
+    }
+
+    #[tokio::test]
+    async fn bash_stderr_merged() {
+        let input = serde_json::json!({"command": "echo err >&2"});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn bash_stdout_and_stderr() {
+        let input = serde_json::json!({"command": "echo out; echo err >&2"});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("out"));
+        assert!(result.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn bash_timeout() {
+        let input = serde_json::json!({"command": "sleep 10", "timeout_ms": 100});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn bash_max_timeout_capped() {
+        // Even if we pass a huge timeout, it should be capped at MAX_TIMEOUT_MS.
+        let input = serde_json::json!({"command": "echo ok", "timeout_ms": 9999999});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn bash_multiline_output() {
+        let input = serde_json::json!({"command": "printf 'line1\nline2\nline3\n'"});
+        let result = BashTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+        assert!(result.contains("line3"));
+    }
+
+    #[tokio::test]
+    async fn read_capped_returns_up_to_cap() {
+        let data = b"hello world, this is a test of capped reading";
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let result = read_capped(cursor, 5).await;
+        assert_eq!(result, b"hello");
+    }
+
+    #[tokio::test]
+    async fn read_capped_empty_input() {
+        let data = b"";
+        let cursor = std::io::Cursor::new(data.to_vec());
+        let result = read_capped(cursor, 100).await;
+        assert!(result.is_empty());
+    }
+}

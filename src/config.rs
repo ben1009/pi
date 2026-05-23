@@ -74,6 +74,7 @@ impl Provider {
     }
 }
 
+#[derive(Debug)]
 pub struct ResolvedConfig {
     pub provider: Provider,
     pub model: String,
@@ -126,4 +127,151 @@ pub fn resolve(input: ResolveInput<'_>) -> Result<ResolvedConfig, ConfigError> {
         max_turns: input.max_turns,
         max_tool_output: input.max_tool_output,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{ENV_LOCK, EnvGuard};
+
+    #[test]
+    fn provider_parse_known() {
+        assert_eq!(Provider::parse("anthropic").unwrap(), Provider::Anthropic);
+        assert_eq!(Provider::parse("claude").unwrap(), Provider::Anthropic);
+        assert_eq!(Provider::parse("openai").unwrap(), Provider::Openai);
+        assert_eq!(Provider::parse("oai").unwrap(), Provider::Openai);
+        assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
+        assert_eq!(Provider::parse("google").unwrap(), Provider::Gemini);
+        assert_eq!(Provider::parse("deepseek").unwrap(), Provider::Deepseek);
+        assert_eq!(Provider::parse("ds").unwrap(), Provider::Deepseek);
+        assert_eq!(Provider::parse("kimi").unwrap(), Provider::Kimi);
+        assert_eq!(Provider::parse("moonshot").unwrap(), Provider::Kimi);
+    }
+
+    #[test]
+    fn provider_parse_case_insensitive() {
+        assert_eq!(Provider::parse("Anthropic").unwrap(), Provider::Anthropic);
+        assert_eq!(Provider::parse("OPENAI").unwrap(), Provider::Openai);
+        assert_eq!(Provider::parse("DeepSeek").unwrap(), Provider::Deepseek);
+    }
+
+    #[test]
+    fn provider_parse_unknown() {
+        assert!(Provider::parse("unknown").is_err());
+        assert!(Provider::parse("").is_err());
+    }
+
+    #[test]
+    fn provider_properties() {
+        // Cover all variants for name(), base_url(), default_model(), api_key_env().
+        assert_eq!(Provider::Anthropic.name(), "anthropic");
+        assert_eq!(Provider::Openai.name(), "openai");
+        assert_eq!(Provider::Gemini.name(), "gemini");
+        assert_eq!(Provider::Deepseek.name(), "deepseek");
+        assert_eq!(Provider::Kimi.name(), "kimi");
+
+        assert_eq!(
+            Provider::Anthropic.base_url(),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(Provider::Openai.base_url(), "https://api.openai.com/v1");
+        assert_eq!(
+            Provider::Gemini.base_url(),
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+        assert_eq!(Provider::Deepseek.base_url(), "https://api.deepseek.com/v1");
+        assert_eq!(Provider::Kimi.base_url(), "https://api.moonshot.ai/v1");
+
+        assert_eq!(Provider::Anthropic.default_model(), "claude-sonnet-4-6");
+        assert_eq!(Provider::Openai.default_model(), "gpt-5");
+        assert_eq!(Provider::Gemini.default_model(), "gemini-2.5-pro");
+        assert_eq!(Provider::Deepseek.default_model(), "deepseek-chat");
+        assert_eq!(Provider::Kimi.default_model(), "kimi-k2-0905-preview");
+
+        assert_eq!(Provider::Anthropic.api_key_env(), "ANTHROPIC_API_KEY");
+        assert_eq!(Provider::Openai.api_key_env(), "OPENAI_API_KEY");
+        assert_eq!(Provider::Gemini.api_key_env(), "GEMINI_API_KEY");
+        assert_eq!(Provider::Deepseek.api_key_env(), "DEEPSEEK_API_KEY");
+        assert_eq!(Provider::Kimi.api_key_env(), "MOONSHOT_API_KEY");
+    }
+
+    #[test]
+    fn resolve_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("ANTHROPIC_API_KEY", "test-key");
+        let cfg = resolve(ResolveInput {
+            provider: None,
+            model: None,
+            max_tokens: None,
+            yolo: false,
+            max_turns: 50,
+            max_tool_output: 4096,
+        })
+        .unwrap();
+        assert_eq!(cfg.provider, Provider::Anthropic);
+        assert_eq!(cfg.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.max_tokens, 8192);
+        assert_eq!(cfg.api_key, "test-key");
+    }
+
+    #[test]
+    fn resolve_missing_key_errors() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::remove("OPENAI_API_KEY");
+        let err = resolve(ResolveInput {
+            provider: Some("openai"),
+            model: None,
+            max_tokens: None,
+            yolo: false,
+            max_turns: 50,
+            max_tool_output: 4096,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn resolve_custom_model_and_max_tokens() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = EnvGuard::set("ANTHROPIC_API_KEY", "test-key");
+        let cfg = resolve(ResolveInput {
+            provider: None,
+            model: Some("claude-opus-4-6"),
+            max_tokens: Some(4096),
+            yolo: true,
+            max_turns: 100,
+            max_tool_output: 8192,
+        })
+        .unwrap();
+        assert_eq!(cfg.model, "claude-opus-4-6");
+        assert_eq!(cfg.max_tokens, 4096);
+        assert!(cfg.yolo);
+        assert_eq!(cfg.max_turns, 100);
+        assert_eq!(cfg.max_tool_output, 8192);
+    }
+
+    #[test]
+    fn resolve_all_providers() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (provider, env_key) in [
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openai", "OPENAI_API_KEY"),
+            ("gemini", "GEMINI_API_KEY"),
+            ("deepseek", "DEEPSEEK_API_KEY"),
+            ("kimi", "MOONSHOT_API_KEY"),
+        ] {
+            let _guard = EnvGuard::set(env_key, "test-key");
+            let cfg = resolve(ResolveInput {
+                provider: Some(provider),
+                model: None,
+                max_tokens: None,
+                yolo: false,
+                max_turns: 50,
+                max_tool_output: 4096,
+            })
+            .unwrap();
+            assert_eq!(cfg.api_key, "test-key");
+            assert!(!cfg.base_url.is_empty());
+        }
+    }
 }

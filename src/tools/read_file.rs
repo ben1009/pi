@@ -92,3 +92,94 @@ impl Tool for ReadTool {
         Ok(truncate(out, ctx.max_output))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+
+    fn ctx() -> ToolCtx {
+        ToolCtx {
+            yolo: true,
+            max_output: 1024 * 1024,
+            stream_stderr: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_basic_file() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-read-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "line one\nline two\nline three").unwrap();
+
+        let input = serde_json::json!({"path": path.display().to_string()});
+        let result = ReadTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("line one"));
+        assert!(result.contains("line two"));
+        assert!(result.contains("line three"));
+        // Should have line numbers
+        assert!(result.contains("1\t"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_with_offset_and_limit() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-read-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for i in 1..=10 {
+            writeln!(f, "line {i}").unwrap();
+        }
+
+        let input =
+            serde_json::json!({"path": path.display().to_string(), "offset": 2, "limit": 3});
+        let result = ReadTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("line 3"));
+        assert!(result.contains("line 4"));
+        assert!(result.contains("line 5"));
+        assert!(!result.contains("line 1"));
+        assert!(!result.contains("line 6"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_nonexistent_file() {
+        let input = serde_json::json!({"path": "/tmp/nonexistent-file-abc123.txt"});
+        let result = ReadTool.run(ctx(), input).await.unwrap();
+        assert!(result.starts_with("Error:"));
+    }
+
+    #[tokio::test]
+    async fn read_non_utf8_file() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-read-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("binary.bin");
+        std::fs::write(&path, [0xFF, 0xFE, 0x00, 0x01]).unwrap();
+
+        let input = serde_json::json!({"path": path.display().to_string()});
+        let result = ReadTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("not valid UTF-8"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn read_empty_window() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-read-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        std::fs::write(&path, "").unwrap();
+
+        let input = serde_json::json!({"path": path.display().to_string()});
+        let result = ReadTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("empty window"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

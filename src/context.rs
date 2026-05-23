@@ -92,3 +92,59 @@ impl ContextTracker {
         self.last_prompt_tokens
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_model_match() {
+        assert_eq!(
+            context_window(Provider::Anthropic, "claude-opus-4-6"),
+            200_000
+        );
+        assert_eq!(context_window(Provider::Openai, "gpt-5"), 256_000);
+        assert_eq!(
+            context_window(Provider::Gemini, "gemini-2.5-pro"),
+            1_048_576
+        );
+        assert_eq!(context_window(Provider::Deepseek, "deepseek-chat"), 128_000);
+        assert_eq!(
+            context_window(Provider::Kimi, "kimi-k2-0905-preview"),
+            131_072
+        );
+    }
+
+    #[test]
+    fn provider_fallback_for_unknown_model() {
+        assert_eq!(
+            context_window(Provider::Anthropic, "unknown-model"),
+            200_000
+        );
+        assert_eq!(context_window(Provider::Openai, "unknown-model"), 128_000);
+        assert_eq!(context_window(Provider::Gemini, "unknown-model"), 1_048_576);
+        assert_eq!(context_window(Provider::Deepseek, "unknown-model"), 128_000);
+        assert_eq!(context_window(Provider::Kimi, "unknown-model"), 131_072);
+    }
+
+    #[test]
+    fn tracker_no_warning_below_threshold() {
+        let mut tracker = ContextTracker::new(100_000);
+        assert!(tracker.update(79_000).is_none());
+        assert_eq!(tracker.last_prompt_tokens(), 79_000);
+    }
+
+    #[test]
+    fn tracker_warns_at_threshold() {
+        let mut tracker = ContextTracker::new(100_000);
+        let warn = tracker.update(80_000).unwrap();
+        assert!(warn.contains("80%"));
+        assert!(warn.contains("80000/100000"));
+    }
+
+    #[test]
+    fn tracker_no_warning_when_window_zero() {
+        let mut tracker = ContextTracker::new(0);
+        assert!(tracker.update(999_999).is_none());
+    }
+}
