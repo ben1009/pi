@@ -168,7 +168,7 @@ async fn repl(
     let mut retry_input: Option<String> = None;
 
     loop {
-        let initial = retry_input.take().unwrap_or_default();
+        let initial = retry_input.clone().unwrap_or_default();
         let read = tokio::task::spawn_blocking(move || {
             let res = rl.readline_with_initial("> ", (&initial, ""));
             (rl, res)
@@ -177,7 +177,10 @@ async fn repl(
         rl = read.0;
 
         let line = match read.1 {
-            Ok(l) => l,
+            Ok(l) => {
+                retry_input = None;
+                l
+            }
             Err(ReadlineError::Interrupted) => continue,
             Err(ReadlineError::Eof) => {
                 // Compact the on-disk history once on graceful exit so

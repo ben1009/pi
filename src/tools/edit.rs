@@ -157,6 +157,6 @@ fn line_similarity(a: &str, b: &str) -> f64 {
             _ => 0,
         })
         .sum();
-    let max_len = a.len().max(b.len());
+    let max_len = a.chars().count().max(b.chars().count());
     matching as f64 / max_len as f64
 }

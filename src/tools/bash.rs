@@ -163,7 +163,7 @@ impl StdoutTasks {
                     }
                 }
             }
-            StdoutTasks::Tee(mut reader, writer) => {
+            StdoutTasks::Tee(mut reader, mut writer) => {
                 let bytes = match tokio::time::timeout(Duration::from_secs(5), &mut reader).await {
                     Ok(res) => res.unwrap_or_default(),
                     Err(_) => {
@@ -172,8 +172,13 @@ impl StdoutTasks {
                     }
                 };
                 // Writer exits when the channel sender is dropped (reader done).
-                // Give it a moment to flush remaining chunks.
-                let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
+                // Give it a moment to flush remaining chunks; abort if it lingers.
+                if tokio::time::timeout(Duration::from_secs(1), &mut writer)
+                    .await
+                    .is_err()
+                {
+                    writer.abort();
+                }
                 bytes
             }
         }
@@ -206,8 +211,9 @@ async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
 }
 
 /// Like `read_capped`, but also sends each chunk to a channel for real-time
-/// streaming (e.g. to stderr). Once `cap` bytes are collected, continues
-/// reading to drain the pipe but stops sending to the channel.
+/// streaming (e.g. to stderr). The `cap` only limits the *collected* buffer
+/// returned to the model; streaming to stderr continues for the entire output.
+/// Uses `try_send` to avoid blocking the reader if the writer falls behind.
 async fn read_capped_tee<R: AsyncRead + Unpin>(
     mut r: R,
     cap: usize,
@@ -221,13 +227,13 @@ async fn read_capped_tee<R: AsyncRead + Unpin>(
             Ok(n) => n,
             Err(_) => break,
         };
+        // Always stream to stderr (drop chunk if channel full to avoid blocking).
+        let _ = tx.try_send(chunk[..n].to_vec());
+        // Only collect up to cap for the tool result.
         if out.len() < cap {
             let take = n.min(cap - out.len());
             out.extend_from_slice(&chunk[..take]);
-            // Send to stderr writer (ignore error if receiver dropped).
-            let _ = tx.send(chunk[..n].to_vec()).await;
         }
-        // Once cap is reached, keep reading to drain but don't collect or send.
     }
     // Drain remaining data so the child's pipe buffer never fills.
     let mut sink = tokio::io::sink();
