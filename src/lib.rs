@@ -1,5 +1,6 @@
 pub mod config;
 pub mod confirm;
+pub mod context;
 pub mod llm;
 pub mod session;
 pub mod tools;
