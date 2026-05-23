@@ -1,6 +1,7 @@
 use crate::config::Provider;
 
 /// Return the context window size (in tokens) for the given provider + model.
+// TODO: Update this table as new models are released. Consider loading from config.
 pub fn context_window(provider: Provider, model: &str) -> u32 {
     // Exact model matches first.
     let exact = match model {

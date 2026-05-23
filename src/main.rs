@@ -668,6 +668,23 @@ async fn compact(
         .collect::<Vec<_>>()
         .join("\n\n");
 
+    // Truncate to avoid exceeding the summarization model's context window.
+    const MAX_HISTORY_CHARS: usize = 100_000;
+    let history_text = if history_text.len() > MAX_HISTORY_CHARS {
+        let truncated = &history_text[..history_text
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= MAX_HISTORY_CHARS)
+            .last()
+            .unwrap_or(0)];
+        format!(
+            "{truncated}\n... <truncated, {} more chars>",
+            history_text.len() - truncated.len()
+        )
+    } else {
+        history_text
+    };
+
     let compact_messages = vec![
         Message::system(
             "You are a conversation summarizer. Produce a concise summary of the key facts, \
@@ -695,7 +712,11 @@ async fn compact(
         .ok_or_else(|| anyhow!("model produced no summary"))?;
 
     // Replace messages: keep system prompt + add summary as system context.
-    let system = messages[0].clone();
+    let system = messages
+        .iter()
+        .find(|m| matches!(m.role, Role::System))
+        .cloned()
+        .unwrap_or_else(|| Message::system(system_prompt()));
     messages.clear();
     messages.push(system);
     messages.push(Message::system(format!(
