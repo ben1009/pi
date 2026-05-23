@@ -101,42 +101,62 @@ impl Tool for EditTool {
     }
 }
 
-/// Best-effort hint when an exact match fails: find lines whose first non-blank
-/// content overlaps the first non-blank line of `needle`, return up to `n` of them.
+/// Best-effort hint when an exact match fails: score every line in `haystack`
+/// against `needle` using edit-distance similarity, return the top `n`.
 fn nearest_lines(haystack: &str, needle: &str, n: usize) -> String {
+    let needle_trimmed = needle.trim();
+    if needle_trimmed.is_empty() {
+        return "  (no hints available)".to_owned();
+    }
+    // Score each line by similarity to the needle. Use the first non-blank
+    // line of the needle as the query for single-line matching, but also
+    // score multi-line windows for longer needles.
     let needle_first = needle
         .lines()
         .find(|l| !l.trim().is_empty())
         .unwrap_or("")
         .trim();
-    if needle_first.is_empty() {
-        return "  (no hints available)".to_owned();
-    }
-    let mut hits: Vec<(usize, &str)> = haystack
-        .lines()
+
+    let lines: Vec<&str> = haystack.lines().collect();
+    let mut scored: Vec<(usize, f64, &str)> = lines
+        .iter()
         .enumerate()
-        .filter(|(_, l)| l.contains(needle_first) || needle_first.contains(l.trim()))
-        .take(n)
-        .map(|(i, l)| (i + 1, l))
+        .map(|(i, line)| {
+            let score = line_similarity(line.trim(), needle_first);
+            (i + 1, score, *line)
+        })
+        .filter(|(_, score, _)| *score > 0.1)
         .collect();
-    if hits.is_empty() {
-        // Fall back to longest-common-substring-ish: any line sharing >= 8 chars.
-        if needle_first.len() >= 8 {
-            let frag = &needle_first[..needle_first.len().min(16)];
-            hits = haystack
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| l.contains(frag))
-                .take(n)
-                .map(|(i, l)| (i + 1, l))
-                .collect();
-        }
-    }
-    if hits.is_empty() {
+
+    if scored.is_empty() {
         return "  (no hints available)".to_owned();
     }
-    hits.iter()
-        .map(|(i, l)| format!("  {i:>6}\t{l}"))
+
+    // Sort by similarity descending, then by line number ascending.
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(n);
+    scored
+        .iter()
+        .map(|(line_num, _score, line)| format!("  {line_num:>6}\t{line}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Compute similarity between two strings using the `similar` crate.
+/// Returns a value between 0.0 (completely different) and 1.0 (identical).
+fn line_similarity(a: &str, b: &str) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let diff = similar::TextDiff::from_chars(a, b);
+    let matching: usize = diff
+        .ops()
+        .iter()
+        .map(|op| match op {
+            similar::DiffOp::Equal { len, .. } => *len,
+            _ => 0,
+        })
+        .sum();
+    let max_len = a.len().max(b.len());
+    matching as f64 / max_len as f64
 }

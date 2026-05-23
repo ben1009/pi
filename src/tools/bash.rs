@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
+    sync::mpsc,
 };
 
 use super::{Tool, ToolCtx, truncate};
@@ -84,7 +85,28 @@ impl Tool for BashTool {
         // ~64KB (the OS pipe buffer) it blocks on write() until someone reads,
         // so reading sequentially after wait() would deadlock.
         let cap = ctx.max_output.saturating_mul(2);
-        let stdout_task = stdout.map(|s| tokio::spawn(read_capped(s, cap)));
+
+        let stdout_tasks = if ctx.stream_stderr {
+            // Stream output to stderr in real-time via a channel.
+            let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+            let reader = stdout.map(|s| tokio::spawn(read_capped_tee(s, cap, tx)));
+            // Writer forwards chunks to stderr as they arrive.
+            let writer = tokio::spawn(async move {
+                let mut stderr = tokio::io::stderr();
+                while let Some(chunk) = rx.recv().await {
+                    let _ = stderr.write_all(&chunk).await;
+                }
+            });
+            match reader {
+                Some(r) => StdoutTasks::Tee(r, writer),
+                None => StdoutTasks::None,
+            }
+        } else {
+            match stdout.map(|s| tokio::spawn(read_capped(s, cap))) {
+                Some(r) => StdoutTasks::Simple(r),
+                None => StdoutTasks::None,
+            }
+        };
 
         let status =
             match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait()).await {
@@ -94,9 +116,7 @@ impl Tool for BashTool {
                     // running and can mutate state. Kill and reap before returning.
                     let _ = child.start_kill();
                     let _ = child.wait().await;
-                    if let Some(t) = stdout_task {
-                        t.abort();
-                    }
+                    stdout_tasks.abort();
                     return Ok(format!(
                         "Error: bash command timed out after {timeout_ms}ms (child killed)"
                     ));
@@ -106,7 +126,7 @@ impl Tool for BashTool {
         // Child has exited but the pipe fd may have been leaked to a daemon
         // (e.g. `nohup foo &`). Bound the drain so we don't hang on the leaked
         // writer; on timeout, abort the reader and return what we have.
-        let out_bytes = drain_or_abort(stdout_task).await;
+        let out_bytes = stdout_tasks.drain_or_abort().await;
 
         let out = String::from_utf8_lossy(&out_bytes);
         let code = status.code().unwrap_or(-1);
@@ -116,6 +136,59 @@ impl Tool for BashTool {
             format!("[exit {code}]\n")
         };
         Ok(truncate(format!("{header}{out}"), ctx.max_output))
+    }
+}
+
+/// Tracks the stdout reader task (and optional stderr writer task for tee mode).
+enum StdoutTasks {
+    None,
+    Simple(tokio::task::JoinHandle<Vec<u8>>),
+    Tee(
+        tokio::task::JoinHandle<Vec<u8>>,
+        tokio::task::JoinHandle<()>,
+    ),
+}
+
+impl StdoutTasks {
+    /// Wait briefly for tasks to finish; abort on timeout so tasks don't linger.
+    async fn drain_or_abort(self) -> Vec<u8> {
+        match self {
+            StdoutTasks::None => Vec::new(),
+            StdoutTasks::Simple(mut handle) => {
+                match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
+                    Ok(res) => res.unwrap_or_default(),
+                    Err(_) => {
+                        handle.abort();
+                        Vec::new()
+                    }
+                }
+            }
+            StdoutTasks::Tee(mut reader, writer) => {
+                let bytes = match tokio::time::timeout(Duration::from_secs(5), &mut reader).await {
+                    Ok(res) => res.unwrap_or_default(),
+                    Err(_) => {
+                        reader.abort();
+                        Vec::new()
+                    }
+                };
+                // Writer exits when the channel sender is dropped (reader done).
+                // Give it a moment to flush remaining chunks.
+                let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
+                bytes
+            }
+        }
+    }
+
+    /// Abort all tasks immediately (used on timeout).
+    fn abort(self) {
+        match self {
+            StdoutTasks::None => {}
+            StdoutTasks::Simple(h) => h.abort(),
+            StdoutTasks::Tee(r, w) => {
+                r.abort();
+                w.abort();
+            }
+        }
     }
 }
 
@@ -132,18 +205,32 @@ async fn read_capped<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> Vec<u8> {
     buf
 }
 
-/// Wait briefly for the pipe-reader task to finish; if it doesn't (leaked pipe
-/// fd holding the writer side open), abort the handle so the task doesn't
-/// linger detached.
-async fn drain_or_abort(task: Option<tokio::task::JoinHandle<Vec<u8>>>) -> Vec<u8> {
-    let Some(mut handle) = task else {
-        return Vec::new();
-    };
-    match tokio::time::timeout(Duration::from_secs(5), &mut handle).await {
-        Ok(res) => res.unwrap_or_default(),
-        Err(_) => {
-            handle.abort();
-            Vec::new()
+/// Like `read_capped`, but also sends each chunk to a channel for real-time
+/// streaming (e.g. to stderr). Once `cap` bytes are collected, continues
+/// reading to drain the pipe but stops sending to the channel.
+async fn read_capped_tee<R: AsyncRead + Unpin>(
+    mut r: R,
+    cap: usize,
+    tx: mpsc::Sender<Vec<u8>>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(cap.min(8192));
+    let mut chunk = vec![0u8; 8192];
+    loop {
+        let n = match r.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if out.len() < cap {
+            let take = n.min(cap - out.len());
+            out.extend_from_slice(&chunk[..take]);
+            // Send to stderr writer (ignore error if receiver dropped).
+            let _ = tx.send(chunk[..n].to_vec()).await;
         }
+        // Once cap is reached, keep reading to drain but don't collect or send.
     }
+    // Drain remaining data so the child's pipe buffer never fills.
+    let mut sink = tokio::io::sink();
+    let _ = tokio::io::copy(&mut r, &mut sink).await;
+    out
 }

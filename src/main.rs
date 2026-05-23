@@ -102,7 +102,7 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
 
     if let Some(prompt) = one_shot {
         messages.push(Message::user(prompt));
-        match drive(&client, &cfg, &registry, &mut messages).await {
+        match drive(&client, &cfg, &registry, &mut messages, false).await {
             Ok(Some(resp)) => {
                 let text = resp.message.content.as_deref().unwrap_or("");
                 if !text.is_empty() {
@@ -165,10 +165,12 @@ async fn repl(
         let _ = rl.load_history(p);
     }
     let mut state = ReplState { last_usage: None };
+    let mut retry_input: Option<String> = None;
 
     loop {
+        let initial = retry_input.take().unwrap_or_default();
         let read = tokio::task::spawn_blocking(move || {
-            let res = rl.readline("> ");
+            let res = rl.readline_with_initial("> ", (&initial, ""));
             (rl, res)
         })
         .await?;
@@ -227,7 +229,7 @@ async fn repl(
         }
 
         messages.push(Message::user(line));
-        match drive(client, cfg, registry, &mut messages).await {
+        match drive(client, cfg, registry, &mut messages, true).await {
             Ok(Some(resp)) => {
                 if let Some(u) = &resp.usage {
                     state.last_usage = Some(u.clone());
@@ -246,12 +248,15 @@ async fn repl(
                 eprintln!("pi-rs: {e}");
                 // Drop the failed user turn so retry doesn't pile up. Stop at
                 // index 1 so the system prompt at index 0 always survives.
+                // Save the user input so readline_with_initial can prefill it.
                 while messages.len() > 1 {
-                    let role = messages.last().unwrap().role.clone();
-                    messages.pop();
-                    if matches!(role, Role::User) {
+                    let msg = messages.last().unwrap();
+                    if matches!(msg.role, Role::User) {
+                        retry_input = msg.content.clone();
+                        messages.pop();
                         break;
                     }
+                    messages.pop();
                 }
             }
         }
@@ -271,10 +276,12 @@ async fn drive(
     cfg: &ResolvedConfig,
     registry: &Registry,
     messages: &mut Vec<Message>,
+    stream_stderr: bool,
 ) -> Result<Option<ChatResponse>> {
     let tool_ctx = ToolCtx {
         yolo: cfg.yolo,
         max_output: cfg.max_tool_output,
+        stream_stderr,
     };
 
     for _ in 0..cfg.max_turns {

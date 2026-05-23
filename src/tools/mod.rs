@@ -20,6 +20,8 @@ pub use write_file::WriteTool;
 pub struct ToolCtx {
     pub yolo: bool,
     pub max_output: usize,
+    /// When true, stream tool output to stderr in real-time (REPL mode).
+    pub stream_stderr: bool,
 }
 
 #[async_trait]
