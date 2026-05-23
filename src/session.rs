@@ -24,18 +24,31 @@ pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()[..8].to_owned()
 }
 
+/// Validate a session ID contains only hex characters.
+fn validate_id(id: &str) -> Result<()> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!("invalid session ID: must be non-empty hex string"));
+    }
+    Ok(())
+}
+
 /// Save a session to disk. Creates the sessions directory if needed.
+/// Uses atomic write (temp file + rename) to prevent corruption on crash.
 pub fn save(session: &Session) -> Result<PathBuf> {
+    validate_id(&session.id)?;
     let dir = sessions_dir().ok_or_else(|| anyhow!("cannot determine data directory"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", session.id));
+    let tmp_path = dir.join(format!("{}.json.tmp", session.id));
     let json = serde_json::to_string_pretty(session)?;
-    std::fs::write(&path, json)?;
+    std::fs::write(&tmp_path, &json)?;
+    std::fs::rename(&tmp_path, &path)?;
     Ok(path)
 }
 
 /// Load a session by ID.
 pub fn load(id: &str) -> Result<Session> {
+    validate_id(id)?;
     let dir = sessions_dir().ok_or_else(|| anyhow!("cannot determine data directory"))?;
     let path = dir.join(format!("{id}.json"));
     let json =
@@ -53,13 +66,23 @@ pub fn list() -> Result<Vec<Session>> {
     let mut sessions = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
-        if entry.path().extension().is_some_and(|e| e == "json") {
-            match std::fs::read_to_string(entry.path()) {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            match std::fs::read_to_string(&path) {
                 Ok(json) => match serde_json::from_str::<Session>(&json) {
                     Ok(s) => sessions.push(s),
-                    Err(_) => continue,
+                    Err(e) => {
+                        eprintln!(
+                            "pi: warning: skipping malformed session {}: {e}",
+                            path.display()
+                        );
+                        continue;
+                    }
                 },
-                Err(_) => continue,
+                Err(e) => {
+                    eprintln!("pi: warning: cannot read {}: {e}", path.display());
+                    continue;
+                }
             }
         }
     }

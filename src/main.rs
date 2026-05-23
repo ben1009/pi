@@ -251,6 +251,34 @@ async fn repl(
     };
     let mut retry_input: Option<String> = None;
 
+    /// Save the current session, initializing id/created_at on first call.
+    fn save_session(state: &mut ReplState, messages: &[Message], label: &str) {
+        let first = messages
+            .iter()
+            .find(|m| matches!(m.role, Role::User))
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default();
+        let id = state.session_id.get_or_insert_with(session::new_id).clone();
+        let created_at = state
+            .session_created_at
+            .get_or_insert_with(chrono_now)
+            .clone();
+        let sess = session::Session {
+            id,
+            created_at,
+            first_prompt: first,
+            messages: messages.to_vec(),
+        };
+        match session::save(&sess) {
+            Ok(path) => {
+                if label == "save" {
+                    eprintln!("pi: saved session {} → {}", sess.id, path.display());
+                }
+            }
+            Err(e) => eprintln!("pi-rs: {label} failed: {e}"),
+        }
+    }
+
     loop {
         let initial = retry_input.clone().unwrap_or_default();
         let read = tokio::task::spawn_blocking(move || {
@@ -294,6 +322,8 @@ async fn repl(
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
+                state.session_id = None;
+                state.session_created_at = None;
                 eprintln!("pi-rs: cleared.");
                 continue;
             }
@@ -308,26 +338,7 @@ async fn repl(
                 continue;
             }
             "/save" => {
-                let first = messages
-                    .iter()
-                    .find(|m| matches!(m.role, Role::User))
-                    .and_then(|m| m.content.clone())
-                    .unwrap_or_default();
-                let id = state.session_id.get_or_insert_with(session::new_id).clone();
-                let created_at = state
-                    .session_created_at
-                    .get_or_insert_with(chrono_now)
-                    .clone();
-                let sess = session::Session {
-                    id: id.clone(),
-                    created_at,
-                    first_prompt: first,
-                    messages: messages.clone(),
-                };
-                match session::save(&sess) {
-                    Ok(path) => eprintln!("pi: saved session {id} → {}", path.display()),
-                    Err(e) => eprintln!("pi-rs: save failed: {e}"),
-                }
+                save_session(&mut state, &messages, "save");
                 continue;
             }
             "/sessions" => {
@@ -367,25 +378,7 @@ async fn repl(
                     eprintln!("pi-rs: model produced no text");
                 }
                 // Auto-save session after successful turn.
-                let first = messages
-                    .iter()
-                    .find(|m| matches!(m.role, Role::User))
-                    .and_then(|m| m.content.clone())
-                    .unwrap_or_default();
-                let id = state.session_id.get_or_insert_with(session::new_id).clone();
-                let created_at = state
-                    .session_created_at
-                    .get_or_insert_with(chrono_now)
-                    .clone();
-                let sess = session::Session {
-                    id,
-                    created_at,
-                    first_prompt: first,
-                    messages: messages.clone(),
-                };
-                if let Err(e) = session::save(&sess) {
-                    eprintln!("pi-rs: auto-save failed: {e}");
-                }
+                save_session(&mut state, &messages, "auto-save");
             }
             Ok(None) => {
                 eprintln!("pi-rs: max turns reached");
