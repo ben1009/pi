@@ -632,10 +632,10 @@ async fn compact(
     messages: &mut Vec<Message>,
 ) -> Result<usize> {
     let original_len = messages.len();
-    let non_system = original_len - 1; // exclude system prompt
-    if non_system < 2 {
-        anyhow::bail!("nothing to compact (need at least 2 non-system messages)");
+    if original_len < 3 {
+        anyhow::bail!("nothing to compact (need at least 3 messages including system prompt)");
     }
+    let non_system = original_len - 1; // exclude system prompt
 
     // Build a fresh message list: system prompt + conversation dump + summarization request.
     let history_text: String = messages

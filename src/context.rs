@@ -36,7 +36,7 @@ pub fn context_window(provider: Provider, model: &str) -> u32 {
         "moonshot-v1-128k" => 131_072,
         "moonshot-v1-32k" => 32_768,
         "moonshot-v1-8k" => 8_192,
-        _ => 0, // Fall through to prefix match.
+        _ => 0, // Fall through to provider-based fallback.
     };
     if exact > 0 {
         return exact;
