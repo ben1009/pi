@@ -10,7 +10,7 @@ repository = "https://github.com/ben1009/pi-rs"
 anyhow = "1"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
-dirs = "5"
+dirs = "6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rustyline = "16"
 serde = { version = "1", features = ["derive"] }
