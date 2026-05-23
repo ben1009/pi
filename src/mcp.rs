@@ -646,4 +646,297 @@ mod tests {
     fn sanitize_all_special_chars() {
         assert_eq!(sanitize_tool_name("./:!@#$%"), "________");
     }
+
+    #[test]
+    fn mcp_server_config_from_json() {
+        let json = serde_json::json!({
+            "name": "fs",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "env": {"KEY": "value"}
+        });
+        let cfg = McpServerConfig::from_json(&json).unwrap();
+        assert_eq!(cfg.name, "fs");
+        assert_eq!(cfg.command, "npx");
+        assert_eq!(cfg.args.len(), 3);
+        assert_eq!(cfg.env.get("KEY").unwrap(), "value");
+    }
+
+    #[test]
+    fn mcp_server_config_minimal() {
+        let json = serde_json::json!({
+            "name": "test",
+            "command": "echo"
+        });
+        let cfg = McpServerConfig::from_json(&json).unwrap();
+        assert_eq!(cfg.name, "test");
+        assert_eq!(cfg.command, "echo");
+        assert!(cfg.args.is_empty());
+        assert!(cfg.env.is_empty());
+    }
+
+    #[test]
+    fn mcp_server_config_invalid_json() {
+        let json = serde_json::json!({"name": "test"}); // missing "command"
+        let result = McpServerConfig::from_json(&json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mcp_configs_from_json_string() {
+        let values = vec![r#"{"name":"test","command":"echo"}"#.to_owned()];
+        let configs = parse_mcp_configs(&values).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "test");
+    }
+
+    #[test]
+    fn parse_mcp_configs_invalid_json_string() {
+        let values = vec!["not json".to_owned()];
+        // Should fail since it tries to parse as JSON, then as file path (which doesn't exist).
+        let result = parse_mcp_configs(&values);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mcp_configs_empty() {
+        let configs = parse_mcp_configs(&[]).unwrap();
+        assert!(configs.is_empty());
+    }
+
+    #[test]
+    fn mcp_tool_content_text() {
+        let content = CallToolContent {
+            kind: "text".to_owned(),
+            text: Some("result text".to_owned()),
+        };
+        assert_eq!(content.kind, "text");
+        assert_eq!(content.text.as_deref(), Some("result text"));
+    }
+
+    #[test]
+    fn mcp_tool_content_non_text() {
+        let content = CallToolContent {
+            kind: "image".to_owned(),
+            text: None,
+        };
+        assert_eq!(content.kind, "image");
+        assert!(content.text.is_none());
+    }
+
+    #[test]
+    fn json_rpc_request_serialization() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize".to_owned(),
+            params: Some(serde_json::json!({"key": "value"})),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"id\":1"));
+        assert!(json.contains("\"method\":\"initialize\""));
+    }
+
+    #[test]
+    fn json_rpc_notification_serialization() {
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "notifications/initialized".to_owned(),
+            params: None,
+        };
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("notifications/initialized"));
+        assert!(!json.contains("params"));
+    }
+
+    #[test]
+    fn json_rpc_response_with_error() {
+        let json_str =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json_str).unwrap();
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, -32601);
+        assert!(resp.result.is_none());
+    }
+
+    #[test]
+    fn json_rpc_response_with_result() {
+        let json_str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json_str).unwrap();
+        assert!(resp.error.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[test]
+    fn json_rpc_response_notification() {
+        // Notifications have no id.
+        let json_str = r#"{"jsonrpc":"2.0","method":"some/notification","params":{}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json_str).unwrap();
+        assert!(resp.id.is_none());
+    }
+
+    #[test]
+    fn initialize_result_deserialization() {
+        let json_str = r#"{"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"test-server","version":"0.1.0"}}"#;
+        let result: InitializeResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.protocol_version, "2025-03-26");
+        assert_eq!(result.server_info.name, "test-server");
+        assert_eq!(result.server_info.version, "0.1.0");
+        assert!(result.capabilities.tools.is_some());
+        assert!(result.capabilities.tools.unwrap().list_changed.unwrap());
+    }
+
+    #[test]
+    fn mcp_tool_def_deserialization() {
+        let json_str = r#"{"name":"read_file","description":"Read a file","inputSchema":{"type":"object","properties":{"path":{"type":"string"}}}}"#;
+        let def: McpToolDef = serde_json::from_str(json_str).unwrap();
+        assert_eq!(def.name, "read_file");
+        assert_eq!(def.description.unwrap(), "Read a file");
+    }
+
+    #[test]
+    fn list_tools_result_deserialization() {
+        let json_str = r#"{"tools":[{"name":"tool1","inputSchema":{}},{"name":"tool2","inputSchema":{}}],"nextCursor":"abc"}"#;
+        let result: ListToolsResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.tools.len(), 2);
+        assert_eq!(result.next_cursor.unwrap(), "abc");
+    }
+
+    #[test]
+    fn call_tool_result_deserialization() {
+        let json_str = r#"{"content":[{"type":"text","text":"hello"}],"isError":false}"#;
+        let result: CallToolResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(result.content[0].text.as_deref(), Some("hello"));
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    fn call_tool_result_error() {
+        let json_str = r#"{"content":[{"type":"text","text":"not found"}],"isError":true}"#;
+        let result: CallToolResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.is_error, Some(true));
+    }
+
+    #[test]
+    fn call_tool_result_no_is_error() {
+        let json_str = r#"{"content":[{"type":"text","text":"ok"}]}"#;
+        let result: CallToolResult = serde_json::from_str(json_str).unwrap();
+        assert!(result.is_error.is_none());
+    }
+
+    #[test]
+    fn server_capabilities_deserialization() {
+        let json_str = r#"{"tools":{"listChanged":true}}"#;
+        let caps: ServerCapabilities = serde_json::from_str(json_str).unwrap();
+        assert!(caps.tools.is_some());
+        assert!(caps.tools.unwrap().list_changed.unwrap());
+    }
+
+    #[test]
+    fn server_capabilities_no_tools() {
+        let json_str = r#"{}"#;
+        let caps: ServerCapabilities = serde_json::from_str(json_str).unwrap();
+        assert!(caps.tools.is_none());
+    }
+
+    #[test]
+    fn server_info_deserialization() {
+        let json_str = r#"{"name":"test-server","version":"1.0.0"}"#;
+        let info: ServerInfo = serde_json::from_str(json_str).unwrap();
+        assert_eq!(info.name, "test-server");
+        assert_eq!(info.version, "1.0.0");
+    }
+
+    #[test]
+    fn tools_capability_deserialization() {
+        let json_str = r#"{"listChanged":false}"#;
+        let cap: ToolsCapability = serde_json::from_str(json_str).unwrap();
+        assert_eq!(cap.list_changed, Some(false));
+    }
+
+    #[test]
+    fn tools_capability_no_list_changed() {
+        let json_str = r#"{}"#;
+        let cap: ToolsCapability = serde_json::from_str(json_str).unwrap();
+        assert!(cap.list_changed.is_none());
+    }
+
+    #[test]
+    fn call_tool_content_multiple_types() {
+        let json_str =
+            r#"{"content":[{"type":"text","text":"hello"},{"type":"image"}],"isError":false}"#;
+        let result: CallToolResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.content.len(), 2);
+        assert_eq!(result.content[0].kind, "text");
+        assert_eq!(result.content[0].text.as_deref(), Some("hello"));
+        assert_eq!(result.content[1].kind, "image");
+        assert!(result.content[1].text.is_none());
+    }
+
+    #[test]
+    fn list_tools_result_no_cursor() {
+        let json_str = r#"{"tools":[{"name":"t","inputSchema":{}}]}"#;
+        let result: ListToolsResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.tools.len(), 1);
+        assert!(result.next_cursor.is_none());
+    }
+
+    #[test]
+    fn mcp_tool_def_no_description() {
+        let json_str = r#"{"name":"tool","inputSchema":{"type":"object"}}"#;
+        let def: McpToolDef = serde_json::from_str(json_str).unwrap();
+        assert_eq!(def.name, "tool");
+        assert!(def.description.is_none());
+    }
+
+    #[test]
+    fn json_rpc_request_no_params() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 5,
+            method: "tools/list".to_owned(),
+            params: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(!json.contains("params"));
+    }
+
+    #[test]
+    fn json_rpc_notification_with_params() {
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "test/method".to_owned(),
+            params: Some(serde_json::json!({"key": "value"})),
+        };
+        let json = serde_json::to_string(&notif).unwrap();
+        assert!(json.contains("params"));
+        assert!(json.contains("key"));
+    }
+
+    #[test]
+    fn json_rpc_response_string_id() {
+        let json_str = r#"{"jsonrpc":"2.0","id":"abc-123","result":{"ok":true}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json_str).unwrap();
+        assert!(resp.id.is_some());
+        assert_eq!(resp.id.unwrap(), serde_json::json!("abc-123"));
+    }
+
+    #[test]
+    fn initialize_result_no_tools_capability() {
+        let json_str = r#"{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"s","version":"v"}}"#;
+        let result: InitializeResult = serde_json::from_str(json_str).unwrap();
+        assert!(result.capabilities.tools.is_none());
+    }
+
+    #[test]
+    fn sanitize_preserves_underscores_and_hyphens() {
+        assert_eq!(sanitize_tool_name("my_tool-name"), "my_tool-name");
+    }
+
+    #[test]
+    fn sanitize_mixed_valid_invalid() {
+        assert_eq!(sanitize_tool_name("tool.name/v2"), "tool_name_v2");
+    }
 }

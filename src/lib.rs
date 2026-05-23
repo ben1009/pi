@@ -89,3 +89,64 @@ pub mod test_util {
         }
     }
 }
+
+#[cfg(test)]
+mod lib_tests {
+    use super::*;
+
+    #[test]
+    fn system_prompt_contains_cwd() {
+        let prompt = system_prompt();
+        assert!(prompt.contains("Working directory:"));
+        assert!(prompt.contains("Operating system:"));
+        assert!(prompt.contains("Date:"));
+    }
+
+    #[test]
+    fn system_prompt_contains_os() {
+        let prompt = system_prompt();
+        let os = std::env::consts::OS;
+        assert!(prompt.contains(os));
+    }
+
+    #[test]
+    fn days_to_ymd_known_dates() {
+        // 1970-01-01 = day 0
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+        // 1970-01-02 = day 1
+        assert_eq!(days_to_ymd(1), (1970, 1, 2));
+        // 1970-02-01 = day 31
+        assert_eq!(days_to_ymd(31), (1970, 2, 1));
+        // 1971-01-01 = day 365
+        assert_eq!(days_to_ymd(365), (1971, 1, 1));
+        // 2000-01-01 = day 10957
+        assert_eq!(days_to_ymd(10957), (2000, 1, 1));
+        // 2024-01-01 = day 19723
+        assert_eq!(days_to_ymd(19723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn days_to_ymd_leap_year() {
+        // 2000-02-29 = day 10957 + 59 = 11016
+        assert_eq!(days_to_ymd(11016), (2000, 2, 29));
+        // 2000-03-01 = day 11017
+        assert_eq!(days_to_ymd(11017), (2000, 3, 1));
+    }
+
+    #[test]
+    fn days_to_ymd_negative_days() {
+        // 1969-12-31 = day -1
+        assert_eq!(days_to_ymd(-1), (1969, 12, 31));
+        // 1969-12-01 = day -31
+        assert_eq!(days_to_ymd(-31), (1969, 12, 1));
+    }
+
+    #[test]
+    fn today_utc_format() {
+        let date = today_utc();
+        // Should be YYYY-MM-DD format.
+        assert_eq!(date.len(), 10);
+        assert_eq!(date.chars().nth(4).unwrap(), '-');
+        assert_eq!(date.chars().nth(7).unwrap(), '-');
+    }
+}

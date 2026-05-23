@@ -106,3 +106,101 @@ fn canonicalize_or_parent(path: &Path) -> PathBuf {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> ToolCtx {
+        ToolCtx {
+            yolo: true,
+            max_output: 1024 * 1024,
+            stream_stderr: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn write_creates_file() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("output.txt");
+        let input =
+            serde_json::json!({"path": path.display().to_string(), "content": "hello world"});
+        let result = WriteTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("wrote 11 bytes"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn write_overwrites_existing() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("overwrite.txt");
+        std::fs::write(&path, "old content").unwrap();
+        let input =
+            serde_json::json!({"path": path.display().to_string(), "content": "new content"});
+        let result = WriteTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("wrote"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn write_creates_parent_dirs() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("a").join("b").join("c.txt");
+        let input = serde_json::json!({"path": path.display().to_string(), "content": "nested"});
+        let result = WriteTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("wrote"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn write_empty_content() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.txt");
+        let input = serde_json::json!({"path": path.display().to_string(), "content": ""});
+        let result = WriteTool.run(ctx(), input).await.unwrap();
+        assert!(result.contains("wrote 0 bytes"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_outside_cwd_relative_path() {
+        // Relative paths resolve inside CWD.
+        assert!(!is_outside_cwd(Path::new("foo.txt")));
+        assert!(!is_outside_cwd(Path::new("./foo.txt")));
+    }
+
+    #[test]
+    fn is_outside_cwd_absolute_outside() {
+        assert!(is_outside_cwd(Path::new("/tmp/definitely-outside-cwd-xyz")));
+    }
+
+    #[test]
+    fn canonicalize_or_parent_existing_file() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("exists.txt");
+        std::fs::write(&path, "data").unwrap();
+        let resolved = canonicalize_or_parent(&path);
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("exists.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn canonicalize_or_parent_nonexistent_nested() {
+        let dir = std::env::temp_dir().join(format!("pi-rs-write-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a").join("b").join("new.txt");
+        let resolved = canonicalize_or_parent(&path);
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("b/new.txt") || resolved.ends_with("b\\new.txt"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

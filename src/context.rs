@@ -123,6 +123,8 @@ mod tests {
         );
         assert_eq!(context_window(Provider::Openai, "unknown-model"), 128_000);
         assert_eq!(context_window(Provider::Gemini, "unknown-model"), 1_048_576);
+        assert_eq!(context_window(Provider::Deepseek, "unknown-model"), 128_000);
+        assert_eq!(context_window(Provider::Kimi, "unknown-model"), 131_072);
     }
 
     #[test]

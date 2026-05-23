@@ -130,3 +130,139 @@ pub trait LlmClient: Send + Sync {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse>;
     async fn complete_stream(&self, req: ChatRequest) -> Result<EventStream>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_system_constructor() {
+        let msg = Message::system("you are helpful");
+        assert!(matches!(msg.role, Role::System));
+        assert_eq!(msg.content.as_deref(), Some("you are helpful"));
+        assert!(msg.tool_calls.is_none());
+        assert!(msg.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn message_user_constructor() {
+        let msg = Message::user("hello");
+        assert!(matches!(msg.role, Role::User));
+        assert_eq!(msg.content.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn message_system_accepts_string() {
+        let msg = Message::system(String::from("test"));
+        assert_eq!(msg.content.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn role_serialization_roundtrip() {
+        let roles = vec![Role::System, Role::User, Role::Assistant, Role::Tool];
+        for role in roles {
+            let json = serde_json::to_string(&role).unwrap();
+            let deserialized: Role = serde_json::from_str(&json).unwrap();
+            assert_eq!(format!("{:?}", role), format!("{:?}", deserialized));
+        }
+    }
+
+    #[test]
+    fn message_serialization_roundtrip() {
+        let msg = Message::user("test message");
+        let json = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.content, msg.content);
+        assert!(matches!(deserialized.role, Role::User));
+    }
+
+    #[test]
+    fn message_with_tool_calls_serializes() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_123".to_owned(),
+                kind: "function".to_owned(),
+                function: ToolCallFunction {
+                    name: "bash".to_owned(),
+                    arguments: "{\"command\":\"ls\"}".to_owned(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("call_123"));
+        assert!(json.contains("bash"));
+        let deserialized: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.tool_calls.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tool_call_type_default() {
+        assert_eq!(tool_call_type(), "function");
+    }
+
+    #[test]
+    fn usage_serialization() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        let json = serde_json::to_string(&usage).unwrap();
+        let deserialized: Usage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.total_tokens, 150);
+    }
+
+    #[test]
+    fn stream_event_content_delta() {
+        let event = StreamEvent::ContentDelta("hello".to_owned());
+        match event {
+            StreamEvent::ContentDelta(s) => assert_eq!(s, "hello"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn stream_event_done() {
+        let event = StreamEvent::Done {
+            finish_reason: "stop".to_owned(),
+            usage: None,
+        };
+        match event {
+            StreamEvent::Done {
+                finish_reason,
+                usage,
+            } => {
+                assert_eq!(finish_reason, "stop");
+                assert!(usage.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn stream_event_error() {
+        let event = StreamEvent::Error("something went wrong".to_owned());
+        match event {
+            StreamEvent::Error(s) => assert_eq!(s, "something went wrong"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn tool_def_serialization() {
+        let def = ToolDef {
+            kind: "function",
+            function: ToolDefFunction {
+                name: "bash",
+                description: "run a command",
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(json.contains("\"type\":\"function\""));
+        assert!(json.contains("bash"));
+    }
+}

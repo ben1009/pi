@@ -97,3 +97,126 @@ pub fn truncate(s: String, max: usize) -> String {
     out.push_str(&format!("\n... <truncated, {dropped} more bytes>"));
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        let s = "hello".to_owned();
+        assert_eq!(truncate(s.clone(), 100), s);
+    }
+
+    #[test]
+    fn truncate_exact_limit_unchanged() {
+        let s = "abcde".to_owned();
+        assert_eq!(truncate(s.clone(), 5), s);
+    }
+
+    #[test]
+    fn truncate_long_string_is_truncated() {
+        let s = "a".repeat(200);
+        let result = truncate(s, 100);
+        assert!(result.len() <= 100 + 64); // cap + suffix
+        assert!(result.contains("truncated"));
+        assert!(result.contains("more bytes"));
+    }
+
+    #[test]
+    fn truncate_utf8_safe() {
+        // 'ñ' is 2 bytes. Truncation should not split it.
+        let s = "a".repeat(99) + "ñ";
+        let result = truncate(s, 100);
+        // The 'ñ' (2 bytes at position 99-100) should be included since byte 99 <= 100.
+        assert!(result.starts_with(&"a".repeat(99)));
+    }
+
+    #[test]
+    fn registry_with_defaults_has_four_tools() {
+        let reg = Registry::with_defaults();
+        assert!(reg.get("bash").is_some());
+        assert!(reg.get("read").is_some());
+        assert!(reg.get("write").is_some());
+        assert!(reg.get("edit").is_some());
+        assert!(reg.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_definitions_sorted_by_name() {
+        let reg = Registry::with_defaults();
+        let defs = reg.definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn registry_register_custom_tool() {
+        struct Dummy;
+        #[async_trait]
+        impl Tool for Dummy {
+            fn name(&self) -> &'static str {
+                "dummy"
+            }
+
+            fn description(&self) -> &'static str {
+                "a dummy"
+            }
+
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+
+            async fn run(
+                &self,
+                _ctx: ToolCtx,
+                _input: serde_json::Value,
+            ) -> anyhow::Result<String> {
+                Ok("ran".to_owned())
+            }
+        }
+
+        let mut reg = Registry::with_defaults();
+        reg.register(Box::new(Dummy));
+        assert!(reg.get("dummy").is_some());
+        assert_eq!(reg.definitions().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn custom_tool_run() {
+        struct Dummy;
+        #[async_trait]
+        impl Tool for Dummy {
+            fn name(&self) -> &'static str {
+                "dummy"
+            }
+
+            fn description(&self) -> &'static str {
+                "a dummy"
+            }
+
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+
+            async fn run(
+                &self,
+                _ctx: ToolCtx,
+                _input: serde_json::Value,
+            ) -> anyhow::Result<String> {
+                Ok("ran".to_owned())
+            }
+        }
+
+        let tool = Dummy;
+        let ctx = ToolCtx {
+            yolo: true,
+            max_output: 4096,
+            stream_stderr: false,
+        };
+        let result = tool.run(ctx, serde_json::json!({})).await.unwrap();
+        assert_eq!(result, "ran");
+    }
+}

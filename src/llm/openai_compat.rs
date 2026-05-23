@@ -283,3 +283,169 @@ impl LlmClient for OpenAiCompatClient {
         Ok(Box::pin(event_stream))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string() {
+        assert_eq!(truncate("hello", 100), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_limit() {
+        let s = "abcde";
+        assert_eq!(truncate(s, 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        let s = "a".repeat(200);
+        let result = truncate(&s, 100);
+        assert!(result.contains("truncated"));
+        assert!(result.contains("more bytes"));
+    }
+
+    #[test]
+    fn truncate_utf8_boundary() {
+        // 'ñ' is 2 bytes. Truncation should not split it.
+        let s = "a".repeat(99) + "ñ";
+        let result = truncate(&s, 100);
+        assert!(result.starts_with(&"a".repeat(99)));
+    }
+
+    #[test]
+    fn parse_sse_done() {
+        let mut out = Vec::new();
+        parse_sse_data("[DONE]", &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            Ok(StreamEvent::Done { finish_reason, .. }) => assert_eq!(finish_reason, "stop"),
+            _ => panic!("expected Done event"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_content_delta() {
+        let data = r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            Ok(StreamEvent::ContentDelta(s)) => assert_eq!(s, "hello"),
+            _ => panic!("expected ContentDelta"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_empty_content_ignored() {
+        let data = r#"{"choices":[{"delta":{"content":""},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        // Empty content should be ignored.
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_sse_no_content_no_toolcalls() {
+        let data = r#"{"choices":[{"delta":{},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_sse_finish_reason() {
+        let data = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            Ok(StreamEvent::Done { finish_reason, .. }) => assert_eq!(finish_reason, "stop"),
+            _ => panic!("expected Done"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_finish_reason_with_usage() {
+        let data = r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        match &out[0] {
+            Ok(StreamEvent::Done { usage, .. }) => {
+                assert!(usage.is_some());
+                assert_eq!(usage.as_ref().unwrap().total_tokens, 15);
+            }
+            _ => panic!("expected Done with usage"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_tool_call_delta() {
+        let data = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"bash","arguments":"{\"c"}}]},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            Ok(StreamEvent::ToolCallDelta {
+                index,
+                id,
+                function_name,
+                arguments_delta,
+            }) => {
+                assert_eq!(*index, 0);
+                assert_eq!(id.as_deref(), Some("call_1"));
+                assert_eq!(function_name.as_deref(), Some("bash"));
+                assert_eq!(arguments_delta.as_deref(), Some("{\"c"));
+            }
+            _ => panic!("expected ToolCallDelta"),
+        }
+    }
+
+    #[test]
+    fn parse_sse_no_choices() {
+        let data = r#"{"choices":[]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_sse_invalid_json_errors() {
+        let mut out = Vec::new();
+        let result = parse_sse_data("not json", &mut out);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_sse_multiple_tool_calls() {
+        let data = r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"a"}},{"index":1,"function":{"name":"b"}}]},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn parse_sse_content_and_tool_calls() {
+        let data = r#"{"choices":[{"delta":{"content":"thinking","tool_calls":[{"index":0,"function":{"name":"bash"}}]},"finish_reason":null}]}"#;
+        let mut out = Vec::new();
+        parse_sse_data(data, &mut out).unwrap();
+        // Should produce both a ContentDelta and a ToolCallDelta.
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn new_client_builds_url() {
+        let client =
+            OpenAiCompatClient::new("https://api.example.com/v1/".to_owned(), "key".to_owned());
+        assert_eq!(client.url, "https://api.example.com/v1/chat/completions");
+    }
+
+    #[test]
+    fn new_client_strips_trailing_slash() {
+        let client =
+            OpenAiCompatClient::new("https://api.example.com/v1".to_owned(), "key".to_owned());
+        assert_eq!(client.url, "https://api.example.com/v1/chat/completions");
+    }
+}

@@ -191,4 +191,47 @@ mod tests {
 
         assert!(load("nonexistent000000").is_err());
     }
+
+    #[test]
+    fn list_empty_when_no_dir() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("pi-rs-test-{}", new_id()));
+        let _env = EnvGuard::set("XDG_DATA_HOME", &dir.display().to_string());
+        let _tmp = TmpDirGuard(dir);
+
+        let sessions = list().unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn list_skips_malformed_json() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("pi-rs-test-{}", new_id()));
+        let _env = EnvGuard::set("XDG_DATA_HOME", &dir.display().to_string());
+        let _tmp = TmpDirGuard(dir.clone());
+
+        let sessions_dir = dir.join("pi-rs").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+
+        // Valid session
+        let valid = Session {
+            id: "aaaa1111aaaa1111".to_owned(),
+            created_at: "2026-05-23T12:00:00Z".to_owned(),
+            first_prompt: "hello".to_owned(),
+            messages: vec![],
+        };
+        let json = serde_json::to_string_pretty(&valid).unwrap();
+        std::fs::write(sessions_dir.join("aaaa1111aaaa1111.json"), &json).unwrap();
+
+        // Malformed JSON
+        std::fs::write(sessions_dir.join("bad.json"), "not valid json{{{").unwrap();
+
+        // Non-JSON file (should be ignored)
+        std::fs::write(sessions_dir.join("notes.txt"), "ignored").unwrap();
+
+        let sessions = list().unwrap();
+        // Should return the valid session, skip the malformed one.
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "aaaa1111aaaa1111");
+    }
 }
