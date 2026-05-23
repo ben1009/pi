@@ -1,6 +1,7 @@
 pub mod config;
 pub mod confirm;
 pub mod llm;
+pub mod session;
 pub mod tools;
 
 pub fn system_prompt() -> String {
