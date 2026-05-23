@@ -513,13 +513,14 @@ pub async fn connect_servers(
 pub fn parse_mcp_configs(values: &[String]) -> Result<Vec<McpServerConfig>> {
     let mut configs = Vec::new();
     for val in values {
-        let json_val: serde_json::Value = if val.starts_with('{') {
-            serde_json::from_str(val)?
-        } else {
-            // Treat as file path.
-            let content = std::fs::read_to_string(val)
-                .map_err(|e| anyhow!("failed to read MCP config file '{val}': {e}"))?;
-            serde_json::from_str(&content)?
+        // Try JSON parse first; fall back to treating as a file path.
+        let json_val: serde_json::Value = match serde_json::from_str(val) {
+            Ok(v) => v,
+            Err(_) => {
+                let content = std::fs::read_to_string(val)
+                    .map_err(|e| anyhow!("failed to read MCP config file '{val}': {e}"))?;
+                serde_json::from_str(&content)?
+            }
         };
         configs.push(McpServerConfig::from_json(&json_val)?);
     }
