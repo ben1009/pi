@@ -32,11 +32,12 @@ struct JsonRpcNotification {
     params: Option<serde_json::Value>,
 }
 
+/// JSON-RPC 2.0 response. `id` uses `Value` to accept both numeric and string IDs.
 #[derive(Deserialize, Debug)]
 struct JsonRpcResponse {
     #[allow(dead_code)]
     jsonrpc: String,
-    id: Option<u64>,
+    id: Option<serde_json::Value>,
     result: Option<serde_json::Value>,
     error: Option<JsonRpcError>,
 }
@@ -106,6 +107,8 @@ pub struct McpToolDef {
 #[derive(Deserialize, Debug)]
 struct ListToolsResult {
     tools: Vec<McpToolDef>,
+    #[serde(rename = "nextCursor")]
+    next_cursor: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -118,7 +121,6 @@ struct CallToolResult {
 #[derive(Deserialize, Debug)]
 struct CallToolContent {
     #[serde(rename = "type")]
-    #[allow(dead_code)]
     kind: String,
     text: Option<String>,
 }
@@ -209,13 +211,25 @@ impl McpServer {
         Ok(server)
     }
 
-    /// List all tools exposed by this server.
+    /// List all tools exposed by this server, following pagination cursors.
     pub async fn list_tools(&mut self) -> Result<Vec<McpToolDef>> {
-        let result: ListToolsResult =
-            tokio::time::timeout(REQUEST_TIMEOUT, self.request("tools/list", None))
-                .await
-                .map_err(|_| anyhow!("MCP server timed out listing tools"))??;
-        Ok(result.tools)
+        let mut all_tools = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+            let page: ListToolsResult =
+                tokio::time::timeout(REQUEST_TIMEOUT, self.request("tools/list", params))
+                    .await
+                    .map_err(|_| anyhow!("MCP server timed out listing tools"))??;
+            all_tools.extend(page.tools);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        Ok(all_tools)
     }
 
     /// Call a tool on this server.
@@ -235,8 +249,18 @@ impl McpServer {
 
         let mut parts = Vec::new();
         for content in &result.content {
-            if let Some(text) = &content.text {
-                parts.push(text.clone());
+            match content.kind.as_str() {
+                "text" => {
+                    if let Some(text) = &content.text {
+                        parts.push(text.clone());
+                    }
+                }
+                other => {
+                    // Non-text content (image, resource, etc.) — include a note
+                    // so the LLM knows something was returned but couldn't be
+                    // rendered as text.
+                    parts.push(format!("[{other} content omitted]"));
+                }
             }
         }
 
@@ -247,7 +271,11 @@ impl McpServer {
         }
     }
 
-    /// Send a JSON-RPC request and wait for the response.
+    /// Send a JSON-RPC request and wait for the matching response.
+    ///
+    /// Server-initiated requests (messages with an `id` that doesn't match ours)
+    /// are logged and skipped — we don't handle server-to-client method calls
+    /// in this initial implementation.
     async fn request<T: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,
@@ -268,6 +296,14 @@ impl McpServer {
         // Read response lines until we get one matching our id.
         loop {
             let line = self.read_line().await?;
+
+            // Try parsing as a batch array — skip batches (not expected in
+            // normal MCP tool-server traffic).
+            if line.starts_with('[') {
+                eprintln!("pi: warning: MCP server sent batch message, skipping");
+                continue;
+            }
+
             let resp: JsonRpcResponse = serde_json::from_str(&line)
                 .map_err(|e| anyhow!("MCP JSON-RPC parse error: {e} line: {line}"))?;
 
@@ -276,10 +312,11 @@ impl McpServer {
                 continue;
             }
 
-            if resp.id != Some(id) {
-                // Misbehaving server — skip and keep looking for our response.
+            // Server-initiated request — has an id but doesn't match ours.
+            // Log and skip; we don't handle server-to-client calls yet.
+            if resp.id.as_ref() != Some(&serde_json::Value::Number(id.into())) {
                 eprintln!(
-                    "pi: warning: MCP unexpected response id {:?}, expected {id}",
+                    "pi: warning: MCP server sent response with id {:?}, expected {id} — skipping",
                     resp.id
                 );
                 continue;
@@ -322,9 +359,10 @@ impl McpServer {
         Ok(line.trim_end().to_owned())
     }
 
-    /// Shut down the server process.
+    /// Shut down the server process, waiting for it to exit.
     pub async fn shutdown(&mut self) -> Result<()> {
         self.child.kill().await.ok();
+        self.child.wait().await.ok();
         Ok(())
     }
 }
@@ -397,58 +435,29 @@ impl Tool for McpTool {
 // Public API — connect to MCP servers and register their tools
 // ---------------------------------------------------------------------------
 
+/// Configuration for a single MCP server.
+///
+/// ```json
+/// {
+///   "name": "fs",
+///   "command": "npx",
+///   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+///   "env": {}
+/// }
+/// ```
+#[derive(Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: String,
+    #[serde(default)]
     pub args: Vec<String>,
+    #[serde(default)]
     pub env: HashMap<String, String>,
 }
 
 impl McpServerConfig {
-    /// Parse from a JSON value. Expected format:
-    /// ```json
-    /// {
-    ///   "name": "fs",
-    ///   "command": "npx",
-    ///   "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-    ///   "env": {}
-    /// }
-    /// ```
     pub fn from_json(value: &serde_json::Value) -> Result<Self> {
-        let name = value
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("MCP server config missing 'name'"))?
-            .to_owned();
-        let command = value
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("MCP server config missing 'command'"))?
-            .to_owned();
-        let args = value
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let env = value
-            .get("env")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(Self {
-            name,
-            command,
-            args,
-            env,
-        })
+        serde_json::from_value(value.clone()).map_err(|e| anyhow!("invalid MCP server config: {e}"))
     }
 }
 
