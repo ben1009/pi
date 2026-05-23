@@ -302,43 +302,79 @@ impl McpServer {
                 continue;
             }
 
-            // Skip batches (not supported/expected).
+            // Handle JSON-RPC batch messages (array of requests/responses).
             if trimmed.starts_with('[') {
-                eprintln!("pi: warning: MCP server sent batch message, skipping");
+                let batch: Vec<serde_json::Value> = match serde_json::from_str(trimmed) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("pi: warning: MCP batch parse error: {e}");
+                        continue;
+                    }
+                };
+                for item in batch {
+                    if let Some(resp) = self.process_response_value(item, id).await? {
+                        return Ok(resp);
+                    }
+                }
                 continue;
             }
 
-            let resp: JsonRpcResponse = match serde_json::from_str(trimmed) {
-                Ok(r) => r,
+            // Single message — parse and process.
+            let value: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
                 Err(e) => {
                     eprintln!("pi: warning: MCP JSON-RPC parse error: {e} line: {trimmed}");
                     continue;
                 }
             };
-
-            // Skip notifications (no id).
-            if resp.id.is_none() {
-                continue;
+            if let Some(resp) = self.process_response_value(value, id).await? {
+                return Ok(resp);
             }
-
-            // Server-initiated request — has an id but doesn't match ours.
-            // Log and skip; we don't handle server-to-client calls yet.
-            if resp.id.as_ref() != Some(&serde_json::Value::Number(id.into())) {
-                eprintln!(
-                    "pi: warning: MCP server sent response with id {:?}, expected {id} — skipping",
-                    resp.id
-                );
-                continue;
-            }
-
-            if let Some(err) = resp.error {
-                return Err(anyhow!("MCP error {}: {}", err.code, err.message));
-            }
-
-            let result = resp.result.ok_or_else(|| anyhow!("MCP: no result"))?;
-            return serde_json::from_value(result)
-                .map_err(|e| anyhow!("MCP: failed to parse result: {e}"));
         }
+    }
+
+    /// Send a JSON-RPC error response for method not found.
+    async fn send_method_not_found(&mut self, req_id: &serde_json::Value) -> Result<()> {
+        let error_resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": { "code": -32601, "message": "Method not found" }
+        });
+        let msg = serde_json::to_string(&error_resp)?;
+        self.send_line(&msg).await
+    }
+
+    /// Process a single JSON-RPC response value from a batch or single message.
+    /// Returns Ok(Some(result)) if this is our response, Ok(None) if processed but not ours.
+    async fn process_response_value<T: serde::de::DeserializeOwned>(
+        &mut self,
+        value: serde_json::Value,
+        expected_id: u64,
+    ) -> Result<Option<T>> {
+        let resp: JsonRpcResponse =
+            serde_json::from_value(value).map_err(|e| anyhow!("MCP JSON-RPC parse error: {e}"))?;
+
+        // Skip notifications (no id).
+        if resp.id.is_none() {
+            return Ok(None);
+        }
+
+        // Server-initiated request — send error response to prevent deadlock.
+        if resp.id.as_ref() != Some(&serde_json::Value::Number(expected_id.into())) {
+            if let Some(req_id) = &resp.id {
+                self.send_method_not_found(req_id).await?;
+            }
+            return Ok(None);
+        }
+
+        if let Some(err) = resp.error {
+            return Err(anyhow!("MCP error {}: {}", err.code, err.message));
+        }
+
+        let result = resp.result.ok_or_else(|| anyhow!("MCP: no result"))?;
+        Ok(Some(serde_json::from_value(result).map_err(|e| {
+            anyhow!("MCP: failed to parse result: {e}")
+        })?))
     }
 
     /// Send a JSON-RPC notification (no response expected).
