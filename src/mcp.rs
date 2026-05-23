@@ -155,7 +155,8 @@ impl McpServer {
         cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -296,16 +297,24 @@ impl McpServer {
         // Read response lines until we get one matching our id.
         loop {
             let line = self.read_line().await?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() || (!trimmed.starts_with('{') && !trimmed.starts_with('[')) {
+                continue;
+            }
 
-            // Try parsing as a batch array — skip batches (not expected in
-            // normal MCP tool-server traffic).
-            if line.starts_with('[') {
+            // Skip batches (not supported/expected).
+            if trimmed.starts_with('[') {
                 eprintln!("pi: warning: MCP server sent batch message, skipping");
                 continue;
             }
 
-            let resp: JsonRpcResponse = serde_json::from_str(&line)
-                .map_err(|e| anyhow!("MCP JSON-RPC parse error: {e} line: {line}"))?;
+            let resp: JsonRpcResponse = match serde_json::from_str(trimmed) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("pi: warning: MCP JSON-RPC parse error: {e} line: {trimmed}");
+                    continue;
+                }
+            };
 
             // Skip notifications (no id).
             if resp.id.is_none() {
