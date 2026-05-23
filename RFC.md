@@ -1,6 +1,6 @@
 # RFC: `pi-rs` — a multi-LLM coding agent in Rust
 
-Status: draft (post self-review)
+Status: **living document** (updated 2026-05-23 to reflect current implementation)
 Author: liu
 Date: 2026-05-22
 
@@ -14,20 +14,22 @@ Date: 2026-05-22
 ## 2. Non-goals (v0)
 
 - TUI, streaming UI, syntax highlighting.
-- MCP, sub-agents, hooks, skills.
-- Slash commands beyond `/clear`, `/exit`, `/tokens`.
+- Sub-agents, hooks, skills.
+- Slash commands beyond `/clear`, `/exit`, `/tokens`, `/save`, `/compact`.
 - Sandboxing/permissioning beyond a confirm-y/n on bash + writes outside CWD.
-- Conversation persistence, compaction, memory.
-- Per-model context-window accounting.
+- Binary file handling (base64 read/write).
+- Native provider adapters (Anthropic Messages API, Gemini native).
+
+> **Note:** Several items originally listed here (MCP, conversation persistence, context accounting, SSE streaming) have since been implemented and are documented in §14.
 
 ## 3. Wire format: OpenAI-compatible Chat Completions
 
-All five providers expose an OpenAI-compatible `/v1/chat/completions` endpoint with tool-use support. We speak that protocol exclusively in v0.
+All five providers expose an OpenAI-compatible `/v1/chat/completions` endpoint with tool-use support. We speak that protocol in the default code path.
 
 | Provider  | Base URL (no trailing slash)                                  | Auth                       |
 |-----------|---------------------------------------------------------------|----------------------------|
 | OpenAI    | `https://api.openai.com/v1`                                   | `Authorization: Bearer …`  |
-| Anthropic | `https://api.anthropic.com/v1`                                | `Authorization: Bearer …`  |
+| Anthropic | `https://api.openai.com/v1` (via OpenAI-compat)               | `Authorization: Bearer …`  |
 | Gemini    | `https://generativelanguage.googleapis.com/v1beta/openai`     | `Authorization: Bearer …`  |
 | DeepSeek  | `https://api.deepseek.com/v1`                                 | `Authorization: Bearer …`  |
 | Kimi      | `https://api.moonshot.ai/v1`                                  | `Authorization: Bearer …`  |
@@ -37,28 +39,35 @@ Notes:
 - Anthropic's compat endpoint accepts `Authorization: Bearer` only; the `x-api-key` header is for the native Messages API and is **not** sent.
 - Kimi default is `api.moonshot.ai` (international). The CN endpoint `api.moonshot.cn` is configurable.
 
-Default model IDs are kept out of the RFC narrative and live in a single `const` table in `config.rs`; the README links to provider model-list docs. Model names rot fast.
+Default model IDs live in a single `const` table in `config.rs`; the README links to provider model-list docs. Model names rot fast.
 
-Tradeoff: we lose vendor-specific features (Anthropic prompt-caching headers, Gemini grounding, OpenAI strict tools, extended thinking blocks). Acceptable for v0 — a `LlmClient` trait keeps the door open for native adapters later.
+Tradeoff: we lose vendor-specific features (Anthropic prompt-caching headers, Gemini grounding, OpenAI strict tools, extended thinking blocks). A `LlmClient` trait keeps the door open for native adapters later.
 
 ## 4. Architecture
 
+Current source tree (as of 2026-05-23):
+
 ```
 src/
-  main.rs              # CLI entry, arg parsing
-  agent.rs             # message loop, tool dispatch, REPL
+  main.rs              # CLI entry, arg parsing, agent loop
+  lib.rs               # Library exports
+  config.rs            # provider registry, default model table, precedence
+  confirm.rs           # y/n confirmation prompts (--yolo bypass)
+  context.rs           # per-model context-window tracking and compaction
+  session.rs           # conversation persistence, --resume, --sessions, /save
   llm/
-    mod.rs             # LlmClient trait, ChatRequest/ChatResponse, ToolCall (crate-private)
-    openai_compat.rs   # the only impl in v0
+    mod.rs             # LlmClient trait, ChatRequest/ChatResponse, ToolCall
+    openai_compat.rs   # OpenAI-compatible client (default)
   tools/
     mod.rs             # Tool trait, registry, JSON schema helpers
-    bash.rs
-    read.rs
-    write.rs
-    edit.rs
-  config.rs            # provider registry, default model table, precedence
-  errors.rs
+    bash.rs            # bash execution with streaming output
+    read_file.rs       # read UTF-8 files with line numbers
+    write_file.rs      # write files (auto-create parents)
+    edit.rs            # exact string replacement
+  mcp.rs               # MCP client over stdio JSON-RPC 2.0
 ```
+
+The original RFC planned `agent.rs` and `errors.rs`; the agent loop lives in `main.rs` and errors are handled via `anyhow` + `color-eyre` throughout.
 
 `LlmClient` trait:
 
@@ -69,7 +78,7 @@ pub(crate) trait LlmClient: Send + Sync {
 }
 ```
 
-`ChatRequest` / `ChatResponse` use the OpenAI shape (`role`, `content`, `tool_calls`, `tool_call_id`) and are crate-private — generic names like `ChatRequest` are not stable public API material.
+`ChatRequest` / `ChatResponse` use the OpenAI shape (`role`, `content`, `tool_calls`, `tool_call_id`) and are crate-private.
 
 ## 5. Configuration
 
@@ -85,7 +94,7 @@ api_key_env = "OPENAI_API_KEY"
 # model = "gpt-5"             # falls back to built-in default
 
 [providers.anthropic]
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://api.openai.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
 
 [providers.gemini]
@@ -124,10 +133,10 @@ loop {
 }
 ```
 
-- **Sequential tool execution.** Even when the model emits multiple `tool_calls` in one turn, v0 runs them in order. Predictable, matches Claude Code behavior, avoids races on the filesystem.
+- **Sequential tool execution.** Even when the model emits multiple `tool_calls` in one turn, they run in order. Predictable, matches Claude Code behavior, avoids races on the filesystem.
 - **`max_tokens`.** Required by Anthropic compat, optional elsewhere. Default `8192`, override via `--max-tokens` / `PI_MAX_TOKENS`.
 - **Reasoning models.** Reasoning content is ignored for display but **still consumes output tokens** and counts against `max_tokens`. Users on o-series / extended-thinking models may need a higher cap.
-- **No context warnings.** v0 ships no per-model context table. The API surfaces context errors; `--max-turns` (default 50) bounds runaway loops.
+- **Context warnings.** Per-model context tracking is implemented in `context.rs`; the agent warns when approaching limits and supports `/compact` to summarize history.
 
 ### 6.1 System prompt (v0)
 
@@ -155,21 +164,21 @@ Prefer using the provided tools (bash, read, write, edit) over guessing. When a 
 
 ## 7. Tools (v0)
 
-| name    | input                                            | behavior                                                                |
-|---------|--------------------------------------------------|-------------------------------------------------------------------------|
-| `bash`  | `{ command: string, timeout_ms?: number }`       | `bash -c` (non-interactive, non-login), **stdout+stderr merged** in source order, 120s default, 600s max. |
-| `read`  | `{ path: string, offset?: number, limit?: number }` | UTF-8 only; `cat -n` style line numbers; 2000-line default window.   |
-| `write` | `{ path: string, content: string }`              | Overwrite/create; **auto-creates parent directories** (`mkdir -p` semantics); **content written as-is**, no newline coercion. Confirm if path outside CWD. |
-| `edit`  | `{ path, old_string, new_string, replace_all? }` | **Exact byte match** (no whitespace normalization). Error if `old_string` not unique and not `replace_all`. On miss, return up to 3 nearest line-number candidates. |
+| name        | input                                            | behavior                                                                |
+|-------------|--------------------------------------------------|-------------------------------------------------------------------------|
+| `bash`      | `{ command: string, timeout_ms?: number }`       | `bash -c` (non-interactive, non-login), **stdout+stderr merged** in source order, 120s default, 600s max. Streaming output supported. |
+| `read_file` | `{ path: string, offset?: number, limit?: number }` | UTF-8 only; `cat -n` style line numbers; 2000-line default window.   |
+| `write_file`| `{ path: string, content: string }`              | Overwrite/create; **auto-creates parent directories** (`mkdir -p` semantics); **content written as-is**, no newline coercion. Confirm if path outside CWD. |
+| `edit`      | `{ path, old_string, new_string, replace_all? }` | **Exact byte match** (no whitespace normalization). Error if `old_string` not unique and not `replace_all`. On miss, return up to 3 nearest line-number candidates. |
 
 Path resolution: relative paths resolve against the **process CWD at startup**; `bash` inherits the same CWD. The agent does not `cd` between calls.
 
-CWD boundary checks (for the "outside CWD → confirm" rule on `write`/`edit`) operate on the **canonicalized path** — i.e. symlinks are resolved before the prefix comparison so a symlink pointing outside CWD cannot bypass the prompt.
+CWD boundary checks (for the "outside CWD → confirm" rule on `write_file`/`edit`) operate on the **canonicalized path** — i.e. symlinks are resolved before the prefix comparison so a symlink pointing outside CWD cannot bypass the prompt.
 
 Encoding & errors:
-- `read` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
-- `write` on a path whose parent dir doesn't exist → parent dirs are created automatically.
-- `edit` miss → tool error including nearest matching lines so the model can self-correct without a re-`read`.
+- `read_file` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
+- `write_file` on a path whose parent dir doesn't exist → parent dirs are created automatically.
+- `edit` miss → tool error including nearest matching lines so the model can self-correct without a re-`read_file`.
 
 Tool trait:
 
@@ -187,7 +196,7 @@ Tools return **plain UTF-8 strings**, which the agent puts into the OpenAI `tool
 
 Result cap: **100,000 chars** per tool result by default, override with `--max-tool-output`. Excess replaced with `\n... <truncated, N more chars>`. Large enough for typical source files and build logs without ballooning context cost.
 
-Confirmation: `bash`, plus `write`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
+Confirmation: `bash`, plus `write_file`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
 
 ## 8. CLI
 
@@ -200,9 +209,11 @@ pi-rs --max-turns 30
 pi-rs --max-tool-output 200000      # bump per-tool-result cap
 pi-rs --yolo                        # skip confirmations
 pi-rs --print-system-prompt         # dump rendered prompt and exit 0
+pi-rs --resume                      # resume last session
+pi-rs --sessions                    # list saved sessions
 ```
 
-REPL slash commands: `/clear` (reset history; system prompt preserved), `/exit`, `/tokens` (print last response's `usage` block).
+REPL slash commands: `/clear` (reset history; system prompt preserved), `/exit`, `/tokens` (print last response's `usage` block), `/save` (persist current session), `/compact` (summarize history to free context).
 
 Exit codes for `-p` one-shot mode:
 - `0` — model finished (`finish_reason = stop`) and produced text.
@@ -220,8 +231,8 @@ Exit codes for `-p` one-shot mode:
 
 Pinned, minimal:
 
-- `tokio` (rt-multi-thread, macros, process, fs)
-- `reqwest` (json, rustls-tls)
+- `tokio` (rt-multi-thread, macros, process, fs, time)
+- `reqwest` (json, rustls-tls, stream — for SSE)
 - `serde`, `serde_json`
 - `clap` (derive)
 - `anyhow`
@@ -229,13 +240,14 @@ Pinned, minimal:
 - `rustyline` (readline + history)
 - `toml`
 - `dirs` (config path resolution)
+- `color-eyre` (panic / error reporting)
 
 Test-only:
 - `wiremock` (mocked `/v1/chat/completions` server for integration tests; no real-API calls in CI)
 
 ## 11. Compatibility caveats
 
-- **Reasoning models** (o-series, gemini-2.5-thinking, claude extended thinking) emit reasoning content differently and consume extra output tokens. v0 ignores reasoning fields for display.
+- **Reasoning models** (o-series, gemini-2.5-thinking, claude extended thinking) emit reasoning content differently and consume extra output tokens. The agent ignores reasoning fields for display.
 - **Strict tool schemas.** OpenAI strict mode requires `additionalProperties: false`; some compat servers reject it. Default to non-strict.
 - **Tool-call IDs.** We round-trip whatever the server sends.
 - **System messages.** All five providers accept the OpenAI `system` role on their compat endpoints.
@@ -243,7 +255,7 @@ Test-only:
 ## 12. Decisions (locked)
 
 1. Default provider: **Anthropic** (model from `config.rs` const table).
-2. Streaming: **off in v0**.
+2. Streaming: **SSE streaming implemented** (was off in v0, enabled post-v0).
 3. Bash sandboxing: **confirm-prompt only**. Not safe for untrusted prompts. Documented.
 4. Tool result cap: **100,000 chars** default; configurable via `--max-tool-output`.
 5. Quirks: **fail loudly** if a provider rejects something; do not silently rewrite requests.
@@ -253,23 +265,32 @@ Test-only:
 
 ## 13. Milestones
 
-- **M1** — scaffold + `LlmClient` trait + `openai_compat` impl + non-tool chat working against all five providers.
-- **M2** — tool trait + four tools + tool-use loop + `--yolo` + `--max-turns`.
-- **M3** — REPL polish (`rustyline`, history file, `/clear`, `/exit`, `/tokens`), `--print-system-prompt`, `wiremock`-backed integration tests, README with one-line install + per-provider snippets.
+- **M1** — scaffold + `LlmClient` trait + `openai_compat` impl + non-tool chat working against all five providers. ✅
+- **M2** — tool trait + four tools + tool-use loop + `--yolo` + `--max-turns`. ✅
+- **M3** — REPL polish (`rustyline`, history file, `/clear`, `/exit`, `/tokens`), `--print-system-prompt`, `wiremock`-backed integration tests, README with one-line install + per-provider snippets. ✅
+- **M4** (post-v0) — SSE streaming, session persistence, context accounting + `/compact`, MCP client integration. ✅
 
 ## 14. Out-of-scope, parked for v1+
 
-- Streaming responses.
-- Native Anthropic adapter (prompt caching, extended thinking).
+- Native Anthropic adapter (prompt caching via `cache_control: ephemeral`, extended thinking).
 - Native Gemini adapter (grounding, file API).
-- Conversation persistence and `/resume`.
 - Sub-agents and parallel tool execution.
-- MCP client.
-- A real permission model.
-- Per-model context-window accounting and compaction.
+- A real permission model (sandboxing, filesystem restrictions).
 - Binary file handling (base64 read/write).
+- Hooks / skills system.
+
+> **Implemented since v0 (moved out of non-goals):**
+> - ~~SSE streaming~~ — Implemented in M4.
+> - ~~Conversation persistence and `/resume`~~ — Implemented in `session.rs`.
+> - ~~MCP client~~ — Implemented in `mcp.rs`.
+> - ~~Per-model context-window accounting and compaction~~ — Implemented in `context.rs`.
 
 ## 15. Follow-up issues to file before M1
 
-- Pick LICENSE (MIT or Apache-2.0) and add it to the repo.
-- Track the model-IDs `const` table in `config.rs` so it can be updated independently of the RFC.
+- [x] Pick LICENSE (MIT or Apache-2.0) and add it to the repo.
+- [x] Track the model-IDs `const` table in `config.rs` so it can be updated independently of the RFC.
+
+## 16. Open items (next)
+
+1. **Native Anthropic adapter** — The OpenAI-compat endpoint lacks `cache_control: ephemeral` prompt caching, which significantly reduces cost for multi-turn conversations with long system prompts. A native Messages API adapter would enable this.
+2. **Sub-agents** — Design and RFC needed. Potential use cases: parallel research, multi-file refactoring with separate context windows.
