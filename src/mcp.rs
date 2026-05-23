@@ -365,8 +365,8 @@ impl McpServer {
         value: serde_json::Value,
         expected_id: u64,
     ) -> Result<Option<T>> {
-        let resp: JsonRpcResponse = serde_json::from_value(value)
-            .map_err(|e| anyhow!("MCP JSON-RPC parse error: {e}"))?;
+        let resp: JsonRpcResponse =
+            serde_json::from_value(value).map_err(|e| anyhow!("MCP JSON-RPC parse error: {e}"))?;
 
         // Skip notifications (no id).
         if resp.id.is_none() {
@@ -392,8 +392,9 @@ impl McpServer {
         }
 
         let result = resp.result.ok_or_else(|| anyhow!("MCP: no result"))?;
-        Ok(Some(serde_json::from_value(result)
-            .map_err(|e| anyhow!("MCP: failed to parse result: {e}"))?))
+        Ok(Some(serde_json::from_value(result).map_err(|e| {
+            anyhow!("MCP: failed to parse result: {e}")
+        })?))
     }
 
     /// Send a JSON-RPC notification (no response expected).
