@@ -131,11 +131,8 @@ pub fn resolve(input: ResolveInput<'_>) -> Result<ResolvedConfig, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_util::{ENV_LOCK, EnvGuard};
 
     #[test]
     fn provider_parse_known() {
@@ -178,7 +175,7 @@ mod tests {
     #[test]
     fn resolve_defaults() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "test-key") };
+        let _guard = EnvGuard::set("ANTHROPIC_API_KEY", "test-key");
         let cfg = resolve(ResolveInput {
             provider: None,
             model: None,
@@ -192,13 +189,12 @@ mod tests {
         assert_eq!(cfg.model, "claude-sonnet-4-6");
         assert_eq!(cfg.max_tokens, 8192);
         assert_eq!(cfg.api_key, "test-key");
-        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
     }
 
     #[test]
     fn resolve_missing_key_errors() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        let _guard = EnvGuard::remove("OPENAI_API_KEY");
         let err = resolve(ResolveInput {
             provider: Some("openai"),
             model: None,

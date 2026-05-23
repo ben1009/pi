@@ -145,6 +145,9 @@ fn nearest_lines(haystack: &str, needle: &str, n: usize) -> String {
 /// Compute similarity between two strings using the `similar` crate.
 /// Returns a value between 0.0 (completely different) and 1.0 (identical).
 fn line_similarity(a: &str, b: &str) -> f64 {
+    if a == b {
+        return 1.0;
+    }
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
@@ -179,7 +182,7 @@ mod tests {
     fn similarity_empty_strings() {
         assert_eq!(line_similarity("", "hello"), 0.0);
         assert_eq!(line_similarity("hello", ""), 0.0);
-        assert_eq!(line_similarity("", ""), 0.0);
+        assert!((line_similarity("", "") - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

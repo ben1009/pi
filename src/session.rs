@@ -93,12 +93,19 @@ pub fn list() -> Result<Vec<Session>> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::path::PathBuf;
 
     use super::*;
+    use crate::test_util::{ENV_LOCK, EnvGuard};
 
-    // Serialize tests that mutate XDG_DATA_HOME (process-wide env var).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// RAII guard that removes a temporary directory on drop.
+    struct TmpDirGuard(PathBuf);
+
+    impl Drop for TmpDirGuard {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
 
     #[test]
     fn new_id_is_length_16() {
@@ -134,7 +141,8 @@ mod tests {
     fn save_load_roundtrip() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("pi-rs-test-{}", new_id()));
-        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
+        let _env = EnvGuard::set("XDG_DATA_HOME", &dir.display().to_string());
+        let _tmp = TmpDirGuard(dir.clone());
 
         let session = Session {
             id: "abcd1234abcd1234".to_owned(),
@@ -149,16 +157,14 @@ mod tests {
         let loaded = load("abcd1234abcd1234").unwrap();
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.first_prompt, session.first_prompt);
-
-        std::fs::remove_dir_all(&dir).ok();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
     fn list_returns_saved_sessions() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("pi-rs-test-{}", new_id()));
-        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
+        let _env = EnvGuard::set("XDG_DATA_HOME", &dir.display().to_string());
+        let _tmp = TmpDirGuard(dir.clone());
 
         for i in 0..3 {
             let session = Session {
@@ -174,20 +180,15 @@ mod tests {
         assert_eq!(sessions.len(), 3);
         // Newest first
         assert!(sessions[0].created_at >= sessions[1].created_at);
-
-        std::fs::remove_dir_all(&dir).ok();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
     fn load_nonexistent_errors() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("pi-rs-test-{}", new_id()));
-        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
+        let _env = EnvGuard::set("XDG_DATA_HOME", &dir.display().to_string());
+        let _tmp = TmpDirGuard(dir);
 
         assert!(load("nonexistent000000").is_err());
-
-        std::fs::remove_dir_all(&dir).ok();
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 }
