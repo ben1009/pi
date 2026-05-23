@@ -4,11 +4,12 @@ use anyhow::Result;
 use clap::Parser;
 use pi_rs::{
     config::{self, ConfigError, ResolveInput, ResolvedConfig},
+    days_to_ymd,
     llm::{
         ChatRequest, ChatResponse, LlmClient, Message, Role, Usage,
         openai_compat::OpenAiCompatClient,
     },
-    system_prompt,
+    session, system_prompt,
     tools::{Registry, ToolCtx},
 };
 use rustyline::{DefaultEditor, config::Configurer, error::ReadlineError};
@@ -44,6 +45,14 @@ struct Cli {
     #[arg(short = 'p', long)]
     prompt: Option<String>,
 
+    /// Resume a previous session by ID.
+    #[arg(long)]
+    resume: Option<String>,
+
+    /// List saved sessions and exit.
+    #[arg(long)]
+    sessions: bool,
+
     /// Print rendered system prompt and exit 0.
     #[arg(long)]
     print_system_prompt: bool,
@@ -58,6 +67,23 @@ async fn main() {
 
     if cli.print_system_prompt {
         println!("{}", system_prompt());
+        return;
+    }
+
+    if cli.sessions {
+        match session::list() {
+            Ok(sessions) => {
+                if sessions.is_empty() {
+                    println!("(no saved sessions)");
+                } else {
+                    for s in &sessions {
+                        let preview = s.first_prompt.chars().take(60).collect::<String>();
+                        println!("{}  {}  {}", s.id, s.created_at, preview);
+                    }
+                }
+            }
+            Err(e) => eprintln!("pi-rs: {e}"),
+        }
         return;
     }
 
@@ -80,18 +106,37 @@ async fn main() {
         }
     };
 
-    let code = run(cfg, cli.prompt).await;
+    let code = run(cfg, cli.prompt, cli.resume).await;
     std::process::exit(code);
 }
 
 struct ReplState {
     last_usage: Option<Usage>,
+    session_id: Option<String>,
+    session_created_at: Option<String>,
 }
 
-async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
+async fn run(cfg: ResolvedConfig, one_shot: Option<String>, resume_id: Option<String>) -> i32 {
     let client = OpenAiCompatClient::new(cfg.base_url.clone(), cfg.api_key.clone());
     let registry = Registry::with_defaults();
-    let mut messages = vec![Message::system(system_prompt())];
+    let (mut messages, resume_created_at) = if let Some(id) = &resume_id {
+        match session::load(id) {
+            Ok(mut s) => {
+                eprintln!("pi: resumed session {id} ({} messages)", s.messages.len());
+                // Replace stale system prompt (old date/CWD) with a fresh one.
+                if !s.messages.is_empty() && matches!(s.messages[0].role, Role::System) {
+                    s.messages[0] = Message::system(system_prompt());
+                }
+                (s.messages, Some(s.created_at))
+            }
+            Err(e) => {
+                eprintln!("pi-rs: {e}");
+                return EXIT_API_OR_TURNS;
+            }
+        }
+    } else {
+        (vec![Message::system(system_prompt())], None)
+    };
 
     eprintln!(
         "pi: provider={} model={} max_tokens={}",
@@ -128,7 +173,16 @@ async fn run(cfg: ResolvedConfig, one_shot: Option<String>) -> i32 {
             }
         }
     } else {
-        match repl(&client, &cfg, &registry, messages).await {
+        match repl(
+            &client,
+            &cfg,
+            &registry,
+            messages,
+            resume_id,
+            resume_created_at,
+        )
+        .await
+        {
             Ok(code) => code,
             Err(e) => {
                 eprintln!("pi-rs: {e}");
@@ -142,11 +196,28 @@ fn history_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("pi-rs").join("history"))
 }
 
+/// ISO 8601 timestamp (UTC, second precision).
+fn chrono_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let sod = (secs % 86_400) as u32;
+    let h = sod / 3600;
+    let m = (sod % 3600) / 60;
+    let s = sod % 60;
+    let (y, mo, d) = days_to_ymd(days);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
 async fn repl(
     client: &OpenAiCompatClient,
     cfg: &ResolvedConfig,
     registry: &Registry,
     mut messages: Vec<Message>,
+    initial_session_id: Option<String>,
+    initial_created_at: Option<String>,
 ) -> Result<i32> {
     let history_path = history_path();
     if let Some(p) = &history_path
@@ -164,8 +235,41 @@ async fn repl(
     if let Some(p) = &history_path {
         let _ = rl.load_history(p);
     }
-    let mut state = ReplState { last_usage: None };
+    let mut state = ReplState {
+        last_usage: None,
+        session_id: initial_session_id,
+        session_created_at: initial_created_at,
+    };
     let mut retry_input: Option<String> = None;
+
+    /// Save the current session, initializing id/created_at on first call.
+    fn save_session(state: &mut ReplState, messages: &[Message], label: &str) {
+        let first = messages
+            .iter()
+            .find(|m| matches!(m.role, Role::User))
+            .and_then(|m| m.content.clone())
+            .unwrap_or_default();
+        let id = state.session_id.get_or_insert_with(session::new_id).clone();
+        let created_at = state
+            .session_created_at
+            .get_or_insert_with(chrono_now)
+            .clone();
+        let sess = session::Session {
+            id,
+            created_at,
+            first_prompt: first,
+            // TODO: debounce auto-save or use Arc<[Message]> to avoid cloning on every turn.
+            messages: messages.to_vec(),
+        };
+        match session::save(&sess) {
+            Ok(path) => {
+                if label == "save" {
+                    eprintln!("pi: saved session {} → {}", sess.id, path.display());
+                }
+            }
+            Err(e) => eprintln!("pi-rs: {label} failed: {e}"),
+        }
+    }
 
     loop {
         let initial = retry_input.clone().unwrap_or_default();
@@ -210,6 +314,8 @@ async fn repl(
             "/clear" => {
                 messages.truncate(1); // keep system prompt
                 state.last_usage = None;
+                state.session_id = None;
+                state.session_created_at = None;
                 eprintln!("pi-rs: cleared.");
                 continue;
             }
@@ -220,6 +326,26 @@ async fn repl(
                         u.prompt_tokens, u.completion_tokens, u.total_tokens
                     ),
                     None => println!("(no usage yet)"),
+                }
+                continue;
+            }
+            "/save" => {
+                save_session(&mut state, &messages, "save");
+                continue;
+            }
+            "/sessions" => {
+                match session::list() {
+                    Ok(sessions) => {
+                        if sessions.is_empty() {
+                            println!("(no saved sessions)");
+                        } else {
+                            for s in &sessions {
+                                let preview = s.first_prompt.chars().take(60).collect::<String>();
+                                println!("{}  {}  {}", s.id, s.created_at, preview);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("pi-rs: {e}"),
                 }
                 continue;
             }
@@ -243,6 +369,8 @@ async fn repl(
                 } else {
                     eprintln!("pi-rs: model produced no text");
                 }
+                // Auto-save session after successful turn.
+                save_session(&mut state, &messages, "auto-save");
             }
             Ok(None) => {
                 eprintln!("pi-rs: max turns reached");
