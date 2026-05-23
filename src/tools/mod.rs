@@ -54,6 +54,12 @@ impl Registry {
         self.tools.get(name).cloned()
     }
 
+    /// Register a tool. If a tool with the same name already exists, it is replaced.
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        let name: &'static str = tool.name();
+        self.tools.insert(name, Arc::from(tool));
+    }
+
     pub fn definitions(&self) -> Vec<ToolDef> {
         let mut defs: Vec<_> = self
             .tools

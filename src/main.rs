@@ -10,7 +10,7 @@ use pi_rs::{
         ChatRequest, ChatResponse, LlmClient, Message, Role, StreamEvent, Usage,
         openai_compat::OpenAiCompatClient,
     },
-    session, system_prompt,
+    mcp, session, system_prompt,
     tools::{Registry, ToolCtx},
 };
 use rustyline::{DefaultEditor, config::Configurer, error::ReadlineError};
@@ -57,6 +57,13 @@ struct Cli {
     /// Print rendered system prompt and exit 0.
     #[arg(long)]
     print_system_prompt: bool,
+
+    /// MCP server config (JSON string or path to JSON file). Repeatable.
+    /// Example: --mcp-server
+    /// '{"name":"fs","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"
+    /// ]}'
+    #[arg(long = "mcp-server", env = "PI_MCP_SERVERS")]
+    mcp_server: Vec<String>,
 }
 
 const EXIT_API_OR_TURNS: i32 = 1;
@@ -107,7 +114,7 @@ async fn main() {
         }
     };
 
-    let code = run(cfg, cli.prompt, cli.resume).await;
+    let code = run(cfg, cli.prompt, cli.resume, cli.mcp_server).await;
     std::process::exit(code);
 }
 
@@ -118,9 +125,28 @@ struct ReplState {
     ctx: ContextTracker,
 }
 
-async fn run(cfg: ResolvedConfig, one_shot: Option<String>, resume_id: Option<String>) -> i32 {
+async fn run(
+    cfg: ResolvedConfig,
+    one_shot: Option<String>,
+    resume_id: Option<String>,
+    mcp_server_args: Vec<String>,
+) -> i32 {
     let client = OpenAiCompatClient::new(cfg.base_url.clone(), cfg.api_key.clone());
-    let registry = Registry::with_defaults();
+    let mut registry = Registry::with_defaults();
+
+    // Connect to MCP servers if configured.
+    if !mcp_server_args.is_empty() {
+        match mcp::parse_mcp_configs(&mcp_server_args) {
+            Ok(configs) => {
+                if let Err(e) = mcp::connect_servers(&configs, &mut registry).await {
+                    eprintln!("pi: warning: MCP server connection error: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("pi: warning: failed to parse MCP server config: {e}");
+            }
+        }
+    }
     let (mut messages, resume_created_at) = if let Some(id) = &resume_id {
         match session::load(id) {
             Ok(mut s) => {
