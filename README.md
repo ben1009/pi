@@ -2,6 +2,7 @@
 
 [![Check](https://github.com/ben1009/pi-rs/actions/workflows/check.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/check.yml)
 [![Test](https://github.com/ben1009/pi-rs/actions/workflows/test.yml/badge.svg)](https://github.com/ben1009/pi-rs/actions/workflows/test.yml)
+[![Coverage](https://codecov.io/gh/ben1009/pi-rs/graph/badge.svg)](https://codecov.io/gh/ben1009/pi-rs)
 
 A multi-LLM coding agent in Rust. Single binary, OpenAI-compatible Chat Completions wire format, four built-in tools (bash, read, write, edit).
 
