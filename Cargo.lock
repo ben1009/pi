@@ -892,6 +892,7 @@ dependencies = [
  "async-trait",
  "clap",
  "dirs",
+ "futures-util",
  "reqwest",
  "rustyline",
  "serde",

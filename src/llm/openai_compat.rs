@@ -1,7 +1,9 @@
+use std::collections::VecDeque;
+
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 
 use super::{
     ChatRequest, ChatResponse, EventStream, LlmClient, Message, StreamEvent, ToolDef, Usage,
@@ -37,7 +39,6 @@ impl OpenAiCompatClient {
         let http = reqwest::Client::builder()
             .user_agent(concat!("pi/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(30))
-            .timeout(std::time::Duration::from_secs(600))
             .build()
             .expect("build reqwest client");
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -190,67 +191,85 @@ impl LlmClient for OpenAiCompatClient {
         }
 
         let stream = resp.bytes_stream();
-        let event_stream = stream.filter_map(move |chunk| {
-            let bytes = match chunk {
-                Ok(b) => b,
-                Err(e) => return Some(Err(anyhow!("stream read error: {e}"))),
-            };
-            let text = String::from_utf8_lossy(&bytes);
-            // Parse SSE lines: each line is either "data: {...}" or "data: [DONE]"
-            for line in text.split('\n') {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with(':') {
-                    continue; // skip empty lines and comments
-                }
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" {
-                        return Some(Ok(StreamEvent::Done {
-                            finish_reason: "stop".to_owned(),
-                            usage: None,
-                        }));
+        // Buffer partial lines across TCP chunks — SSE events can span multiple chunks.
+        let event_stream = stream
+            .scan(VecDeque::<u8>::new(), |buf, chunk| {
+                let chunk = match chunk {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return std::future::ready(Some(vec![Err(anyhow!(
+                            "stream read error: {e}"
+                        ))]));
                     }
-                    match serde_json::from_str::<StreamResponse>(data) {
-                        Ok(resp) => {
-                            let choice = match resp.choices.into_iter().next() {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                            if let Some(reason) = choice.finish_reason {
-                                return Some(Ok(StreamEvent::Done {
-                                    finish_reason: reason,
-                                    usage: resp.usage,
-                                }));
+                };
+                buf.extend(chunk.iter().copied());
+
+                let mut out = Vec::new();
+                // Extract all complete lines (delimited by \n).
+                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                    let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+                    // .lines() handles \r\n, \r, \n but we already split on \n;
+                    // just trim trailing \r for the \r\n case.
+                    let line = String::from_utf8_lossy(&line_bytes);
+                    let line = line.trim_end_matches('\r').trim_end_matches('\n').trim();
+                    if line.is_empty() || line.starts_with(':') {
+                        continue;
+                    }
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data == "[DONE]" {
+                            out.push(Ok(StreamEvent::Done {
+                                finish_reason: "stop".to_owned(),
+                                usage: None,
+                            }));
+                            continue;
+                        }
+                        match serde_json::from_str::<StreamResponse>(data) {
+                            Ok(resp) => {
+                                let choice = match resp.choices.into_iter().next() {
+                                    Some(c) => c,
+                                    None => continue,
+                                };
+                                if let Some(reason) = choice.finish_reason {
+                                    out.push(Ok(StreamEvent::Done {
+                                        finish_reason: reason,
+                                        usage: resp.usage,
+                                    }));
+                                    continue;
+                                }
+                                if let Some(content) = choice.delta.content
+                                    && !content.is_empty()
+                                {
+                                    out.push(Ok(StreamEvent::ContentDelta(content)));
+                                }
+                                if let Some(tool_calls) = choice.delta.tool_calls {
+                                    for tc in tool_calls {
+                                        out.push(Ok(StreamEvent::ToolCallDelta {
+                                            index: tc.index,
+                                            id: tc.id,
+                                            function_name: tc
+                                                .function
+                                                .as_ref()
+                                                .and_then(|f| f.name.clone()),
+                                            arguments_delta: tc
+                                                .function
+                                                .as_ref()
+                                                .and_then(|f| f.arguments.clone()),
+                                        }));
+                                    }
+                                }
                             }
-                            if let Some(content) = choice.delta.content
-                                && !content.is_empty()
-                            {
-                                return Some(Ok(StreamEvent::ContentDelta(content)));
-                            }
-                            if let Some(tool_calls) = choice.delta.tool_calls
-                                && let Some(tc) = tool_calls.into_iter().next()
-                            {
-                                return Some(Ok(StreamEvent::ToolCallDelta {
-                                    index: tc.index,
-                                    id: tc.id,
-                                    function_name: tc
-                                        .function
-                                        .as_ref()
-                                        .and_then(|f| f.name.clone()),
-                                    arguments_delta: tc
-                                        .function
-                                        .as_ref()
-                                        .and_then(|f| f.arguments.clone()),
-                                }));
+                            Err(e) => {
+                                out.push(Err(anyhow!(
+                                    "SSE parse error: {e} data: {}",
+                                    truncate(data, 500)
+                                )));
                             }
                         }
-                        Err(e) => {
-                            return Some(Err(anyhow!("SSE parse error: {e} data: {data}")));
-                        }
                     }
                 }
-            }
-            None
-        });
+                std::future::ready(Some(out))
+            })
+            .flat_map(stream::iter);
 
         Ok(Box::pin(event_stream))
     }

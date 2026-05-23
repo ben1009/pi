@@ -502,7 +502,7 @@ async fn send_streaming(
 ) -> Result<ChatResponse> {
     use std::collections::BTreeMap;
 
-    use tokio_stream::StreamExt;
+    use futures_util::StreamExt;
 
     let req = ChatRequest {
         model: cfg.model.clone(),
@@ -514,7 +514,7 @@ async fn send_streaming(
     let mut stream = client.complete_stream(req).await?;
     let mut content = String::new();
     let mut tool_calls: BTreeMap<usize, (String, String, String)> = BTreeMap::new(); // index -> (id, name, args)
-    let mut finish_reason = String::new();
+    let mut finish_reason = "stop".to_owned();
     let mut usage = None;
 
     while let Some(event) = stream.next().await {
@@ -569,19 +569,19 @@ async fn send_streaming(
         tool_calls: if tool_calls.is_empty() {
             None
         } else {
-            Some(
-                tool_calls
-                    .into_values()
-                    .map(|(id, name, args)| pi_rs::llm::ToolCall {
-                        id,
-                        kind: "function".to_owned(),
-                        function: pi_rs::llm::ToolCallFunction {
-                            name,
-                            arguments: args,
-                        },
-                    })
-                    .collect(),
-            )
+            let calls: Vec<_> = tool_calls
+                .into_values()
+                .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
+                .map(|(id, name, args)| pi_rs::llm::ToolCall {
+                    id,
+                    kind: "function".to_owned(),
+                    function: pi_rs::llm::ToolCallFunction {
+                        name,
+                        arguments: args,
+                    },
+                })
+                .collect();
+            if calls.is_empty() { None } else { Some(calls) }
         },
         tool_call_id: None,
     };
