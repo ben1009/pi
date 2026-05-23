@@ -15,35 +15,37 @@ Pre-v1, in priority order.
 
 ## Next
 
-- **Subagents.** Parked while wrapping M2. Needs its own RFC pass before
-  code: `task` tool shape (stateless one-shot vs model override vs
-  parallel fan-out), `--max-subagent-turns`, cost/blast-radius story.
-- **Streaming responses.** RFC §14, parked. Server-Sent Events on
-  `/v1/chat/completions`; rustyline output without breaking the REPL
-  prompt; tool calls arrive in deltas, need accumulation.
-- **Conversation `/resume`.** Persist message history per session
-  (`$XDG_DATA_HOME/pi-rs/sessions/<id>.json`); `pi-rs --resume <id>` reloads.
-  Pair with `pi-rs --sessions` (and a `/sessions` slash command) that
-  lists IDs with first-prompt + timestamp so users don't have to
-  remember UUIDs. Also enables a `/save` slash command.
 - **Native Anthropic adapter.** Prompt caching headers
   (`cache_control: ephemeral` on system prompt + tool list) cut cost
   significantly across multi-turn sessions. Implement as a second
   `LlmClient` impl behind `pi-rs -P anthropic-native`, leave OpenAI-compat
   Anthropic as the default fallback.
+- **Subagents.** Parked while wrapping M2. Needs its own RFC pass before
+  code: `task` tool shape (stateless one-shot vs model override vs
+  parallel fan-out), `--max-subagent-turns`, cost/blast-radius story.
+
+## Done
+
+- ~~**Streaming responses.**~~ Done. SSE streaming with content deltas and
+  tool-call accumulation via `complete_stream` / `send_streaming`.
+- ~~**Conversation `/resume`.**~~ Done. `pi-rs --resume <id>` reloads saved
+  sessions; `pi-rs --sessions` lists them; `/save` slash command persists
+  current session.
+- ~~**MCP client.**~~ Done. External tool servers via stdio transport,
+  with tool name sanitization, duplicate server detection, and collision
+  guards.
+- ~~**Per-model context accounting + compaction.**~~ Done. Per-provider
+  context window sizes in `context.rs`; `/compact` slash command summarizes
+  early turns.
+- ~~**Streaming bash output.**~~ Done. Bash tool streams stdout to stderr
+  in real-time when `stream_stderr` is enabled.
 
 ## Later
 
-- **MCP client.** External tool servers via the Model Context Protocol.
-  Big surface; plan separately.
 - **Real permission model.** Confirm-prompt + `--yolo` is the v0 honest
   story but isn't a sandbox. Bubblewrap on Linux / Seatbelt on macOS,
   or shell out to firejail when present. Untrusted-prompt safety story
   for code agents in general is unsolved; this is exploratory.
-- **Per-model context accounting + compaction.** Today the API surfaces
-  context errors and we let `--max-turns` bound runaway loops. A
-  per-model context table + a `/compact` slash command that summarizes
-  early turns would help long sessions.
 - **Binary file handling.** `read` errors on non-UTF-8; consider
   base64-mode for images / pdfs once the model surface gains
   multimodal-tool-result support.
@@ -53,11 +55,6 @@ Pre-v1, in priority order.
 - **Benchmark `messages.to_vec()` clone-per-request.** Three reviewers
   flagged it across PRs #2 and #3; we declined as v0 micro-optimization.
   Profile a real long session to confirm or refute.
-- **Streaming bash output.** Today we capture-then-return; long-running
-  commands look frozen. Stream stdout to the user as it arrives, then
-  send the captured tail as the tool result. Keep the post-cap pipe
-  drain and reader-task abort guarantees from the existing tool — they
-  are load-bearing for crash safety.
 - **rustyline buffer restore on API error.** Round-2 PR #2 reviewer
   suggestion: on retry, prefill the readline buffer with the last
   failed input via `readline_with_initial`. Currently the user retypes.
