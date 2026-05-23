@@ -567,6 +567,14 @@ pub async fn connect_servers(
 
         for mcp_tool in &tools {
             let tool = McpTool::new(&cfg.name, mcp_tool, server.clone());
+            if registry.get(tool.name()).is_some() {
+                eprintln!(
+                    "pi: warning: tool name collision '{}' (from server '{}'), skipping",
+                    tool.name(),
+                    cfg.name
+                );
+                continue;
+            }
             registry.register(Box::new(tool));
         }
 
@@ -593,4 +601,49 @@ pub fn parse_mcp_configs(values: &[String]) -> Result<Vec<McpServerConfig>> {
         configs.push(McpServerConfig::from_json(&json_val)?);
     }
     Ok(configs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_preserves_valid_chars() {
+        assert_eq!(sanitize_tool_name("abc_123-XYZ"), "abc_123-XYZ");
+    }
+
+    #[test]
+    fn sanitize_replaces_special_chars() {
+        assert_eq!(sanitize_tool_name("tool.name/here"), "tool_name_here");
+        assert_eq!(sanitize_tool_name("a:b:c"), "a_b_c");
+        assert_eq!(sanitize_tool_name("foo bar"), "foo_bar");
+    }
+
+    #[test]
+    fn sanitize_truncates_to_64_chars() {
+        let long_name = "a".repeat(100);
+        let result = sanitize_tool_name(&long_name);
+        assert_eq!(result.len(), 64);
+        assert_eq!(result.chars().count(), 64);
+    }
+
+    #[test]
+    fn sanitize_multibyte_utf8_boundary() {
+        // 'ñ' is 2 bytes in UTF-8 — truncation must not split it
+        let name = "a".repeat(63) + "ñ";
+        let result = sanitize_tool_name(&name);
+        assert_eq!(result.chars().count(), 64);
+        // The 'ñ' should be replaced with '_' since it's not ASCII alphanumeric
+        assert!(result.ends_with('_'));
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_tool_name(""), "");
+    }
+
+    #[test]
+    fn sanitize_all_special_chars() {
+        assert_eq!(sanitize_tool_name("./:!@#$%"), "________");
+    }
 }
