@@ -289,4 +289,4 @@ Test-only:
 ## 16. Open items (next)
 
 1. **Native Anthropic adapter** — The OpenAI-compat endpoint lacks `cache_control: ephemeral` prompt caching, which significantly reduces cost for multi-turn conversations with long system prompts. A native Messages API adapter would enable this.
-2. **Sub-agents** — Design and RFC needed. Potential use cases: parallel research, multi-file refactoring with separate context windows.
+2. **Sub-agents** — RFC 002 drafted. Potential use cases: parallel research, multi-file refactoring with separate context windows.
