@@ -231,7 +231,7 @@ impl SubAgent {
                         eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                         match tool.run(self.tool_ctx, input).await {
                             Ok(r) => r,
-                            Err(e) => return Ok(format!("[error: sub-agent tool failure: {}]", e)),
+                            Err(e) => format!("Error: tool '{}' failed: {}", call.function.name, e),
                         }
                     }
                 };
@@ -240,10 +240,12 @@ impl SubAgent {
         }
 
         // Return last substantive message (non-empty text, no tool calls)
-        Ok(format!(
-            "{}\n[warning: sub-agent hit max_turns limit]",
-            last_substantive_content(&messages)
-        ))
+        let content = last_substantive_content(&messages);
+        if content.is_empty() {
+            Ok("[warning: sub-agent hit max_turns with no summary produced]".into())
+        } else {
+            Ok(format!("{}\n[warning: sub-agent hit max_turns limit]", content))
+        }
     }
 }
 ```
@@ -307,6 +309,8 @@ impl Tool for TaskTool {
 ```
 
 ### Registration
+
+**Prerequisite:** The current `Registry` is a plain struct owned by the agent loop. Implementing sub-agents requires refactoring it to `Arc<Mutex<Registry>>` so that `TaskTool` can hold a `Weak` reference. This is a breaking change to `main.rs` initialization and must be done first.
 
 `TaskTool` needs a reference to the `Registry`, but it is inserted into that same registry. Using `Arc<Registry>` directly creates a reference cycle (leak). Use `Weak<Mutex<Registry>>` instead:
 
