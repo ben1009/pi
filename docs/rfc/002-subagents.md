@@ -69,7 +69,8 @@ pub async fn run(&self, cancel: CancellationToken) -> Result<String> {
     ).await;
 
     match result {
-        Ok(r) => r,
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => Ok(format!("[error: sub-agent failed: {}]", e)),
         Err(_) => Ok("[error: sub-agent timed out]".into()),
     }
 }
@@ -112,7 +113,7 @@ The parent's system prompt is **not** included — the sub-agent doesn't need to
 
 ### What the parent receives
 
-The sub-agent's last **substantive** assistant message is returned as the `task` tool's result. A "substantive" message is one with non-empty text and no pending tool calls.
+The sub-agent's last **substantive** assistant message is returned as the `task` tool's result. A "substantive" message is one with non-empty content. This includes messages that also contain tool calls — if the model provides useful analysis in the same turn it calls a tool, that content is preserved.
 
 On `max_turns` exhaustion: return the last substantive message + `[warning: sub-agent hit max_turns limit]`. If no substantive message exists (e.g., the sub-agent was looping on tool calls), return `[warning: sub-agent hit max_turns with no summary produced]`.
 
@@ -238,6 +239,10 @@ impl SubAgent {
                         eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                         match tool.run(self.tool_ctx, input).await {
                             Ok(r) => r,
+                            // Transport-level error — abort, don't loop.
+                            // Note: the main agent (src/main.rs) converts all tool errors to
+                            // strings and lets the LLM recover. Sub-agents abort instead
+                            // because a sub-task with a broken tool is unlikely to succeed.
                             Err(e) => return Ok(format!("[error: sub-agent tool failure: {}]", e)),
                         }
                     }
@@ -248,7 +253,7 @@ impl SubAgent {
 
         // Return last substantive message (non-empty text, no tool calls)
         // last_substantive_content iterates messages in reverse, returning the last
-        // Assistant message with non-empty content and no pending tool_calls.
+        // Assistant message with non-empty content (including messages with tool calls).
         let content = last_substantive_content(&messages);
         if content.is_empty() {
             Ok("[warning: sub-agent hit max_turns with no summary produced]".into())
