@@ -189,6 +189,7 @@ impl SubAgent {
             eprintln!("[sub-agent] turn {}/{}: awaiting response", turn + 1, self.max_turns);
 
             let req = ChatRequest {
+                model: self.model.clone(),
                 messages: messages.clone(),
                 tools: tools.clone(),
                 max_tokens: self.max_tokens,
@@ -201,7 +202,15 @@ impl SubAgent {
             }
 
             for call in &resp.message.tool_calls {
-                let result = match self.tool_registry.dispatch(call).await {
+                let tool = match self.tool_registry.get(&call.name) {
+                    Some(t) => t,
+                    None => {
+                        let msg = format!("Error: unknown tool '{}'", call.name);
+                        messages.push(tool_result(call.id.clone(), msg));
+                        continue;
+                    }
+                };
+                let result = match tool.run(call.arguments.clone()).await {
                     Ok(r) => r,
                     Err(e) => {
                         // Transport-level error — abort, don't loop
@@ -209,7 +218,7 @@ impl SubAgent {
                     }
                 };
                 eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.name);
-                messages.push(tool_result(call.id, result));
+                messages.push(tool_result(call.id.clone(), result));
             }
         }
 
@@ -241,7 +250,7 @@ impl Tool for TaskTool {
     async fn run(&self, input: Value) -> Result<String> {
         // Validate tool names against registry before spawning
         let tools: Vec<String> = input["tools"].as_array()
-            .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
             .unwrap_or_else(|| vec!["read".into()]);
 
         for name in &tools {
@@ -250,8 +259,13 @@ impl Tool for TaskTool {
             }
         }
 
+        let task = match input["task"].as_str() {
+            Some(t) => t.to_string(),
+            None => return Ok("Error: missing required field 'task'".into()),
+        };
+
         let sub = SubAgent {
-            task: input["task"].as_str().unwrap().to_string(),
+            task,
             model: input["model"].as_str()
                 .unwrap_or(&self.default_model).to_string(),
             tools,
