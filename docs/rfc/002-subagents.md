@@ -174,7 +174,8 @@ impl SubAgent {
             self.run_inner(cancel),
         ).await;
         match result {
-            Ok(r) => r,
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Ok(format!("[error: sub-agent failed: {}]", e)),
             Err(_) => Ok("[error: sub-agent timed out]".into()),
         }
     }
@@ -203,35 +204,37 @@ impl SubAgent {
                 _ => return Ok(resp.message.content.unwrap_or_default()),
             };
 
-            let registry = self.tool_registry.upgrade()
-                .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
-            let reg = registry.lock().await;
-            // Resolve tools first, then release lock before executing
-            // (tool.run() may lock the registry again for nested task calls)
-            let resolved: Vec<_> = tool_calls.iter().filter_map(|call| {
-                reg.get(&call.function.name).map(|tool| (call, tool))
-            }).collect();
-            let missing: Vec<_> = tool_calls.iter().filter(|call| {
-                reg.get(&call.function.name).is_none()
-            }).collect();
-            drop(reg);
-
-            for call in &missing {
-                let msg = format!("Error: unknown tool '{}'", call.function.name);
-                messages.push(tool_result(call.id.clone(), msg));
+            // Resolve tools under lock, then release before executing
+            // (tool.run() may re-lock for nested task calls)
+            let mut resolved_calls: Vec<(usize, Option<Arc<dyn Tool>>)> = Vec::new();
+            {
+                let registry = self.tool_registry.upgrade()
+                    .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
+                let reg = registry.lock().await;
+                for (i, call) in tool_calls.iter().enumerate() {
+                    resolved_calls.push((i, reg.get(&call.function.name)));
+                }
             }
 
-            for (call, tool) in &resolved {
-                let input: serde_json::Value = serde_json::from_str(&call.function.arguments)
-                    .unwrap_or(serde_json::json!({}));
-                let result = match tool.run(self.tool_ctx, input).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        // Transport-level error — abort, don't loop
-                        return Ok(format!("[error: sub-agent tool failure: {}]", e));
+            // Process in tool_calls order to preserve result ordering
+            for (call, tool_opt) in tool_calls.iter().zip(resolved_calls.into_iter().map(|(_, t)| t)) {
+                let result = match tool_opt {
+                    None => format!("Error: unknown tool '{}'", call.function.name),
+                    Some(tool) => {
+                        let input: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                messages.push(tool_result(call.id.clone(), format!("Error: invalid JSON arguments: {e}")));
+                                continue;
+                            }
+                        };
+                        eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
+                        match tool.run(self.tool_ctx, input).await {
+                            Ok(r) => r,
+                            Err(e) => return Ok(format!("[error: sub-agent tool failure: {}]", e)),
+                        }
                     }
                 };
-                eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                 messages.push(tool_result(call.id.clone(), result));
             }
         }

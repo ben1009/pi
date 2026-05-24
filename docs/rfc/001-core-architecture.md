@@ -87,7 +87,7 @@ Precedence: CLI flag → env var → built-in defaults.
 
 ```toml
 # Configuration via environment variables:
-# PI_RS_PROVIDER, PI_RS_MODEL, PI_RS_API_KEY, etc.
+# PI_PROVIDER, PI_MODEL, OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 
 [providers.anthropic]
 base_url = "https://api.openai.com/v1"
@@ -153,9 +153,9 @@ Prefer using the provided tools (bash, read, write, edit) over guessing. When a 
 ### 6.2 Stop and cancellation
 
 - `finish_reason = stop` and no tool calls → return to outer loop.
-- Ctrl-C during an in-flight API call or running tool: cancel the future, discard the partial assistant message, return to the prompt. The user's last input stays in history so they can re-send.
+- Ctrl-C while waiting for input (`ReadlineError::Interrupted`): discard input, return to prompt. (Note: Ctrl-C during in-flight API calls or tool runs is not yet implemented — see §14.)
 - Ctrl-D / `/exit` → exit 0.
-- API non-2xx → print body to stderr, **keep the user message in history** and **restore the user's last input into the readline buffer** so they can edit and retry without retyping. Loop stays alive.
+- API non-2xx → print body to stderr, **remove the failed user turn from history** and **restore the user's last input into the readline buffer** so they can edit and retry without retyping. Loop stays alive.
 - Unknown tool name from the model → tool message `Error: unknown tool '<name>'`; the model recovers.
 
 ## 7. Tools (v0)
@@ -192,7 +192,7 @@ Tools return **plain UTF-8 strings**, which the agent puts into the OpenAI `tool
 
 Result cap: **100,000 chars** per tool result by default, override with `--max-tool-output`. Excess replaced with `\n... <truncated, N more chars>`. Large enough for typical source files and build logs without ballooning context cost.
 
-Confirmation: `bash`, plus `write`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
+Confirmation: `bash`, plus `read`/`write`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
 
 ## 8. CLI
 
