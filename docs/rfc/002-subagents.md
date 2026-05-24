@@ -206,15 +206,22 @@ impl SubAgent {
             let registry = self.tool_registry.upgrade()
                 .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
             let reg = registry.lock().await;
-            for call in &tool_calls {
-                let tool = match reg.get(&call.function.name) {
-                    Some(t) => t,
-                    None => {
-                        let msg = format!("Error: unknown tool '{}'", call.function.name);
-                        messages.push(tool_result(call.id.clone(), msg));
-                        continue;
-                    }
-                };
+            // Resolve tools first, then release lock before executing
+            // (tool.run() may lock the registry again for nested task calls)
+            let resolved: Vec<_> = tool_calls.iter().filter_map(|call| {
+                reg.get(&call.function.name).map(|tool| (call, tool))
+            }).collect();
+            let missing: Vec<_> = tool_calls.iter().filter(|call| {
+                reg.get(&call.function.name).is_none()
+            }).collect();
+            drop(reg);
+
+            for call in &missing {
+                let msg = format!("Error: unknown tool '{}'", call.function.name);
+                messages.push(tool_result(call.id.clone(), msg));
+            }
+
+            for (call, tool) in &resolved {
                 let input: serde_json::Value = serde_json::from_str(&call.function.arguments)
                     .unwrap_or(serde_json::json!({}));
                 let result = match tool.run(self.tool_ctx, input).await {
@@ -227,7 +234,6 @@ impl SubAgent {
                 eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                 messages.push(tool_result(call.id.clone(), result));
             }
-            drop(reg); // release lock before next LLM call
         }
 
         // Return last substantive message (non-empty text, no tool calls)
@@ -245,6 +251,7 @@ impl SubAgent {
 pub(crate) struct TaskTool {
     client: Arc<dyn LlmClient>,
     registry: Weak<Mutex<Registry>>,
+    parent_tools: Vec<String>,  // tools available to the parent agent
     default_model: String,
     cancel: CancellationToken,
 }
@@ -268,6 +275,9 @@ impl Tool for TaskTool {
             if reg.get(name).is_none() {
                 return Ok(format!("Error: unknown tool '{}'", name));
             }
+            if !self.parent_tools.contains(name) {
+                return Ok(format!("Error: tool '{}' not available to parent agent", name));
+            }
         }
 
         let task = match input["task"].as_str() {
@@ -284,7 +294,7 @@ impl Tool for TaskTool {
             max_tokens: input["max_tokens"].as_u64().unwrap_or(8192) as usize,
             timeout_ms: input["timeout_ms"].as_u64().unwrap_or(120_000),
             client: self.client.clone(),
-            registry: self.registry.clone(),
+            tool_registry: self.registry.clone(),
             tool_ctx: _ctx,
         };
         drop(reg); // release lock before running sub-agent
@@ -302,9 +312,11 @@ impl Tool for TaskTool {
 let registry = Arc::new(Mutex::new(Registry::with_defaults()));
 
 // Phase 2: create task tool with Weak reference to registry
+let parent_tools: Vec<String> = vec!["read".into(), "bash".into()]; // agent's configured tools
 let task_tool = TaskTool::new(
     client.clone(),
     Arc::downgrade(&registry),  // Weak — no reference cycle
+    parent_tools,
     default_model,
     cancel.clone(),
 );

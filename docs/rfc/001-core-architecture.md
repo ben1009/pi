@@ -29,7 +29,7 @@ All five providers expose an OpenAI-compatible `/v1/chat/completions` endpoint w
 | Provider  | Base URL (no trailing slash)                                  | Auth                       |
 |-----------|---------------------------------------------------------------|----------------------------|
 | OpenAI    | `https://api.openai.com/v1`                                   | `Authorization: Bearer …`  |
-| Anthropic | `https://api.openai.com/v1` (via OpenAI-compat)               | `Authorization: Bearer …`  |
+| Anthropic | `https://api.anthropic.com/v1`                                | `Authorization: Bearer …`  |
 | Gemini    | `https://generativelanguage.googleapis.com/v1beta/openai`     | `Authorization: Bearer …`  |
 | DeepSeek  | `https://api.deepseek.com/v1`                                 | `Authorization: Bearer …`  |
 | Kimi      | `https://api.moonshot.ai/v1`                                  | `Authorization: Bearer …`  |
@@ -61,8 +61,8 @@ src/
   tools/
     mod.rs             # Tool trait, registry, JSON schema helpers
     bash.rs            # bash execution with streaming output
-    read_file.rs       # read UTF-8 files with line numbers
-    write_file.rs      # write files (auto-create parents)
+    read_file.rs       # read UTF-8 files with line numbers (tool name: `read`)
+    write_file.rs      # write files (tool name: `write`)
     edit.rs            # exact string replacement
   mcp.rs               # MCP client over stdio JSON-RPC 2.0
 ```
@@ -75,6 +75,7 @@ The original RFC planned `agent.rs` and `errors.rs`; the agent loop lives in `ma
 #[async_trait]
 pub(crate) trait LlmClient: Send + Sync {
     async fn complete(&self, req: ChatRequest) -> Result<ChatResponse>;
+    async fn complete_stream(&self, req: ChatRequest) -> Result<EventStream>;
 }
 ```
 
@@ -82,16 +83,11 @@ pub(crate) trait LlmClient: Send + Sync {
 
 ## 5. Configuration
 
-Precedence: CLI flag → env var → `~/.config/pi-rs/config.toml` → built-in defaults.
+Precedence: CLI flag → env var → built-in defaults.
 
 ```toml
-# ~/.config/pi-rs/config.toml
-default_provider = "anthropic"
-
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-# model = "gpt-5"             # falls back to built-in default
+# Configuration via environment variables:
+# PI_RS_PROVIDER, PI_RS_MODEL, PI_RS_API_KEY, etc.
 
 [providers.anthropic]
 base_url = "https://api.openai.com/v1"
@@ -167,18 +163,18 @@ Prefer using the provided tools (bash, read, write, edit) over guessing. When a 
 | name        | input                                            | behavior                                                                |
 |-------------|--------------------------------------------------|-------------------------------------------------------------------------|
 | `bash`      | `{ command: string, timeout_ms?: number }`       | `bash -c` (non-interactive, non-login), **stdout+stderr merged** in source order, 120s default, 600s max. Streaming output supported. |
-| `read_file` | `{ path: string, offset?: number, limit?: number }` | UTF-8 only; `cat -n` style line numbers; 2000-line default window.   |
-| `write_file`| `{ path: string, content: string }`              | Overwrite/create; **auto-creates parent directories** (`mkdir -p` semantics); **content written as-is**, no newline coercion. Confirm if path outside CWD. |
+| `read`      | `{ path: string, offset?: number, limit?: number }` | UTF-8 only; `cat -n` style line numbers; 2000-line default window.   |
+| `write`     | `{ path: string, content: string }`              | Overwrite/create; **auto-creates parent directories** (`mkdir -p` semantics); **content written as-is**, no newline coercion. Confirm if path outside CWD. |
 | `edit`      | `{ path, old_string, new_string, replace_all? }` | **Exact byte match** (no whitespace normalization). Error if `old_string` not unique and not `replace_all`. On miss, return up to 3 nearest line-number candidates. |
 
 Path resolution: relative paths resolve against the **process CWD at startup**; `bash` inherits the same CWD. The agent does not `cd` between calls.
 
-CWD boundary checks (for the "outside CWD → confirm" rule on `write_file`/`edit`) operate on the **canonicalized path** — i.e. symlinks are resolved before the prefix comparison so a symlink pointing outside CWD cannot bypass the prompt.
+CWD boundary checks (for the "outside CWD → confirm" rule on `write`/`edit`) operate on the **canonicalized path** — i.e. symlinks are resolved before the prefix comparison so a symlink pointing outside CWD cannot bypass the prompt.
 
 Encoding & errors:
-- `read_file` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
-- `write_file` on a path whose parent dir doesn't exist → parent dirs are created automatically.
-- `edit` miss → tool error including nearest matching lines so the model can self-correct without a re-`read_file`.
+- `read` on a non-UTF-8 file → tool message `Error: <path> is not valid UTF-8` (no base64 fallback in v0).
+- `write` on a path whose parent dir doesn't exist → parent dirs are created automatically.
+- `edit` miss → tool error including nearest matching lines so the model can self-correct without a re-`read`.
 
 Tool trait:
 
@@ -188,7 +184,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn schema(&self) -> serde_json::Value;
-    async fn run(&self, input: serde_json::Value) -> Result<String>;
+    async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String>;
 }
 ```
 
@@ -196,7 +192,7 @@ Tools return **plain UTF-8 strings**, which the agent puts into the OpenAI `tool
 
 Result cap: **100,000 chars** per tool result by default, override with `--max-tool-output`. Excess replaced with `\n... <truncated, N more chars>`. Large enough for typical source files and build logs without ballooning context cost.
 
-Confirmation: `bash`, plus `write_file`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
+Confirmation: `bash`, plus `write`/`edit` to paths outside CWD, prompt y/n unless `--yolo`.
 
 ## 8. CLI
 
@@ -209,7 +205,7 @@ pi-rs --max-turns 30
 pi-rs --max-tool-output 200000      # bump per-tool-result cap
 pi-rs --yolo                        # skip confirmations
 pi-rs --print-system-prompt         # dump rendered prompt and exit 0
-pi-rs --resume                      # resume last session
+pi-rs --resume <SESSION_ID>         # resume a specific session
 pi-rs --sessions                    # list saved sessions
 ```
 
