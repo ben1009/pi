@@ -90,7 +90,7 @@ Precedence: CLI flag → env var → built-in defaults.
 # PI_PROVIDER, PI_MODEL, OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 
 [providers.anthropic]
-base_url = "https://api.openai.com/v1"
+base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
 
 [providers.gemini]

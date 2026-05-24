@@ -82,7 +82,7 @@ async fn run_inner(&self, cancel: CancellationToken) -> Result<String> {
 }
 ```
 
-- `CancellationToken` from the parent propagates to the sub-agent. On Ctrl-C, the parent drops the token; the sub-agent checks it each turn and aborts cleanly.
+- `CancellationToken` from the parent propagates to the sub-agent. On Ctrl-C, the parent calls `cancel.cancel()` (or uses a `DropGuard`); the sub-agent checks `cancel.is_cancelled()` each turn and aborts cleanly. Note: dropping a `CancellationToken` clone does **not** signal cancellation — `cancel()` must be called explicitly.
 - `timeout_ms` wraps the entire `run()` — a stuck `bash` subprocess doesn't hang the parent forever.
 - Tool execution (`bash`) should forward the cancellation token to kill child processes.
 
@@ -160,7 +160,7 @@ pub(crate) struct SubAgent {
     model: String,
     tools: Vec<String>,
     max_turns: usize,
-    max_tokens: usize,
+    max_tokens: u32,
     timeout_ms: u64,
     client: Arc<dyn LlmClient>,
     tool_registry: Weak<Mutex<Registry>>,
@@ -181,7 +181,7 @@ impl SubAgent {
     }
 
     async fn run_inner(&self, cancel: CancellationToken) -> Result<String> {
-        let mut messages = vec![self.system_prompt(), user_message(&self.task)];
+        let mut messages = vec![self.system_prompt(), Message::user(&self.task)];
         let tools = self.filtered_tools();
 
         for turn in 0..self.max_turns {
@@ -201,45 +201,54 @@ impl SubAgent {
 
             let tool_calls = match resp.message.tool_calls {
                 Some(tc) if !tc.is_empty() => tc,
-                _ => return Ok(resp.message.content.unwrap_or_default()),
+                _ => {
+                    let content = last_substantive_content(&messages);
+                    return Ok(if content.is_empty() {
+                        "[warning: sub-agent produced no summary]".into()
+                    } else {
+                        content
+                    });
+                }
             };
 
             // Resolve tools under lock, then release before executing
             // (tool.run() may re-lock for nested task calls)
-            let mut resolved_calls: Vec<(usize, Option<Arc<dyn Tool>>)> = Vec::new();
+            let mut resolved_calls: Vec<Option<Arc<dyn Tool>>> = Vec::with_capacity(tool_calls.len());
             {
                 let registry = self.tool_registry.upgrade()
                     .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
                 let reg = registry.lock().await;
-                for (i, call) in tool_calls.iter().enumerate() {
-                    resolved_calls.push((i, reg.get(&call.function.name)));
+                for call in tool_calls.iter() {
+                    resolved_calls.push(reg.get(&call.function.name));
                 }
             }
 
             // Process in tool_calls order to preserve result ordering
-            for (call, tool_opt) in tool_calls.iter().zip(resolved_calls.into_iter().map(|(_, t)| t)) {
+            for (call, tool_opt) in tool_calls.iter().zip(resolved_calls) {
                 let result = match tool_opt {
                     None => format!("Error: unknown tool '{}'", call.function.name),
                     Some(tool) => {
                         let input: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
                             Ok(v) => v,
                             Err(e) => {
-                                messages.push(tool_result(call.id.clone(), format!("Error: invalid JSON arguments: {e}")));
+                                messages.push(tool_message(call.id.clone(), format!("Error: invalid JSON arguments: {e}")));
                                 continue;
                             }
                         };
                         eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                         match tool.run(self.tool_ctx, input).await {
                             Ok(r) => r,
-                            Err(e) => format!("Error: tool '{}' failed: {}", call.function.name, e),
+                            Err(e) => return Ok(format!("[error: sub-agent tool failure: {}]", e)),
                         }
                     }
                 };
-                messages.push(tool_result(call.id.clone(), result));
+                messages.push(tool_message(call.id.clone(), result));
             }
         }
 
         // Return last substantive message (non-empty text, no tool calls)
+        // last_substantive_content iterates messages in reverse, returning the last
+        // Assistant message with non-empty content and no pending tool_calls.
         let content = last_substantive_content(&messages);
         if content.is_empty() {
             Ok("[warning: sub-agent hit max_turns with no summary produced]".into())
@@ -267,7 +276,7 @@ impl Tool for TaskTool {
     fn description(&self) -> &'static str { "Spawn a sub-agent for isolated research" }
     fn schema(&self) -> serde_json::Value { /* tool schema */ }
 
-    async fn run(&self, _ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
+    async fn run(&self, ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
         // Validate tool names against registry before spawning
         let tools: Vec<String> = input["tools"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
@@ -296,11 +305,11 @@ impl Tool for TaskTool {
                 .unwrap_or(&self.default_model).to_string(),
             tools,
             max_turns: input["max_turns"].as_u64().unwrap_or(10) as usize,
-            max_tokens: input["max_tokens"].as_u64().unwrap_or(8192) as usize,
+            max_tokens: input["max_tokens"].as_u64().unwrap_or(8192) as u32,
             timeout_ms: input["timeout_ms"].as_u64().unwrap_or(120_000),
             client: self.client.clone(),
             tool_registry: self.registry.clone(),
-            tool_ctx: _ctx,
+            tool_ctx: ctx,
         };
         drop(reg); // release lock before running sub-agent
         sub.run(self.cancel.clone()).await
