@@ -76,7 +76,7 @@ pub async fn run(&self, cancel: CancellationToken) -> Result<String> {
 
 async fn run_inner(&self, cancel: CancellationToken) -> Result<String> {
     for turn in 0..self.max_turns {
-        cancel.is_cancelled().then(|| anyhow::bail!("cancelled"));
+        if cancel.is_cancelled() { anyhow::bail!("cancelled"); }
         // ... agent loop
     }
 }
@@ -163,7 +163,8 @@ pub(crate) struct SubAgent {
     max_tokens: usize,
     timeout_ms: u64,
     client: Arc<dyn LlmClient>,
-    tool_registry: Arc<ToolRegistry>,
+    tool_registry: Weak<Mutex<Registry>>,
+    tool_ctx: ToolCtx,
 }
 
 impl SubAgent {
@@ -197,29 +198,36 @@ impl SubAgent {
             let resp = self.client.complete(req).await?;
             messages.push(resp.message.clone());
 
-            if resp.message.tool_calls.is_empty() {
-                return Ok(resp.message.content.unwrap_or_default());
-            }
+            let tool_calls = match resp.message.tool_calls {
+                Some(tc) if !tc.is_empty() => tc,
+                _ => return Ok(resp.message.content.unwrap_or_default()),
+            };
 
-            for call in &resp.message.tool_calls {
-                let tool = match self.tool_registry.get(&call.name) {
+            let registry = self.tool_registry.upgrade()
+                .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
+            let reg = registry.lock().await;
+            for call in &tool_calls {
+                let tool = match reg.get(&call.function.name) {
                     Some(t) => t,
                     None => {
-                        let msg = format!("Error: unknown tool '{}'", call.name);
+                        let msg = format!("Error: unknown tool '{}'", call.function.name);
                         messages.push(tool_result(call.id.clone(), msg));
                         continue;
                     }
                 };
-                let result = match tool.run(call.arguments.clone()).await {
+                let input: serde_json::Value = serde_json::from_str(&call.function.arguments)
+                    .unwrap_or(serde_json::json!({}));
+                let result = match tool.run(self.tool_ctx, input).await {
                     Ok(r) => r,
                     Err(e) => {
                         // Transport-level error — abort, don't loop
                         return Ok(format!("[error: sub-agent tool failure: {}]", e));
                     }
                 };
-                eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.name);
+                eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
                 messages.push(tool_result(call.id.clone(), result));
             }
+            drop(reg); // release lock before next LLM call
         }
 
         // Return last substantive message (non-empty text, no tool calls)
@@ -236,7 +244,7 @@ impl SubAgent {
 ```rust
 pub(crate) struct TaskTool {
     client: Arc<dyn LlmClient>,
-    registry: Arc<ToolRegistry>,
+    registry: Weak<Mutex<Registry>>,
     default_model: String,
     cancel: CancellationToken,
 }
@@ -244,17 +252,20 @@ pub(crate) struct TaskTool {
 #[async_trait]
 impl Tool for TaskTool {
     fn name(&self) -> &'static str { "task" }
+    fn description(&self) -> &'static str { "Spawn a sub-agent for isolated research" }
+    fn schema(&self) -> serde_json::Value { /* tool schema */ }
 
-    fn schema(&self) -> Value { /* tool schema */ }
-
-    async fn run(&self, input: Value) -> Result<String> {
+    async fn run(&self, _ctx: ToolCtx, input: serde_json::Value) -> Result<String> {
         // Validate tool names against registry before spawning
         let tools: Vec<String> = input["tools"].as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
             .unwrap_or_else(|| vec!["read".into()]);
 
+        let registry = self.registry.upgrade()
+            .ok_or_else(|| anyhow::anyhow!("registry dropped"))?;
+        let reg = registry.lock().await;
         for name in &tools {
-            if !self.registry.contains(name) {
+            if reg.get(name).is_none() {
                 return Ok(format!("Error: unknown tool '{}'", name));
             }
         }
@@ -274,7 +285,9 @@ impl Tool for TaskTool {
             timeout_ms: input["timeout_ms"].as_u64().unwrap_or(120_000),
             client: self.client.clone(),
             registry: self.registry.clone(),
+            tool_ctx: _ctx,
         };
+        drop(reg); // release lock before running sub-agent
         sub.run(self.cancel.clone()).await
     }
 }
@@ -282,20 +295,25 @@ impl Tool for TaskTool {
 
 ### Registration
 
-`TaskTool` needs `registry.clone()`, but it is inserted into that same registry. This requires two-phase init:
+`TaskTool` needs a reference to the `Registry`, but it is inserted into that same registry. Using `Arc<Registry>` directly creates a reference cycle (leak). Use `Weak<Mutex<Registry>>` instead:
 
 ```rust
-// Phase 1: create registry with core tools
-let registry = Arc::new(ToolRegistry::new());
-registry.register(bash_tool);
-registry.register(read_tool);
-registry.register(write_tool);
-registry.register(edit_tool);
+// Phase 1: create registry with core tools (wrapped in Mutex for interior mutability)
+let registry = Arc::new(Mutex::new(Registry::with_defaults()));
 
-// Phase 2: create and register task tool (needs registry reference)
-let task_tool = Arc::new(TaskTool::new(client.clone(), registry.clone(), default_model, cancel.clone()));
-registry.register(task_tool);
+// Phase 2: create task tool with Weak reference to registry
+let task_tool = TaskTool::new(
+    client.clone(),
+    Arc::downgrade(&registry),  // Weak — no reference cycle
+    default_model,
+    cancel.clone(),
+);
+
+// Phase 3: register task tool into registry
+registry.lock().await.register(Box::new(task_tool));
 ```
+
+`Weak::upgrade()` returns `None` if the registry has been dropped — the task tool handles this gracefully. The `Mutex` allows `register(&mut self)` to be called through the shared `Arc`.
 
 ## 8. CLI additions
 
