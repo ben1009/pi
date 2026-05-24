@@ -85,7 +85,7 @@ async fn run_inner(&self, cancel: CancellationToken) -> Result<String> {
 
 - `CancellationToken` from the parent propagates to the sub-agent. On Ctrl-C, the parent calls `cancel.cancel()` (or uses a `DropGuard`); the sub-agent checks `cancel.is_cancelled()` each turn and aborts cleanly. Note: dropping a `CancellationToken` clone does **not** signal cancellation — `cancel()` must be called explicitly.
 - `timeout_ms` wraps the entire `run()` — a stuck `bash` subprocess doesn't hang the parent forever.
-- Tool execution (`bash`) should forward the cancellation token to kill child processes.
+- Tool execution (`bash`) should forward the cancellation token to kill child processes. This requires adding `cancel: CancellationToken` to the `ToolCtx` struct (currently it only has `yolo`, `max_output`, `stream_stderr`).
 
 ## 5. System prompt
 
@@ -232,8 +232,9 @@ impl SubAgent {
                         let input: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
                             Ok(v) => v,
                             Err(e) => {
+                                // Report error for this call, continue to next tool call
                                 messages.push(tool_message(call.id.clone(), format!("Error: invalid JSON arguments: {e}")));
-                                continue;
+                                continue; // skips tool.run for this call only; next call still processed
                             }
                         };
                         eprintln!("[sub-agent] turn {}/{}: running {}", turn + 1, self.max_turns, call.function.name);
@@ -324,7 +325,7 @@ impl Tool for TaskTool {
 
 ### Registration
 
-**Prerequisite:** The current `Registry` is a plain struct owned by the agent loop. Implementing sub-agents requires refactoring it to `Arc<Mutex<Registry>>` so that `TaskTool` can hold a `Weak` reference. This is a breaking change to `main.rs` initialization and must be done first.
+**Prerequisite:** The current `Registry` is a plain struct owned by the agent loop. Implementing sub-agents requires refactoring it to `Arc<Mutex<Registry>>` so that `TaskTool` can hold a `Weak` reference. This is a breaking change to `main.rs` initialization and must be done first. Impact: `mcp::connect_servers` currently takes `&mut Registry` — it will need to take `&Mutex<Registry>` or lock internally.
 
 `TaskTool` needs a reference to the `Registry`, but it is inserted into that same registry. Using `Arc<Registry>` directly creates a reference cycle (leak). Use `Weak<Mutex<Registry>>` instead:
 
