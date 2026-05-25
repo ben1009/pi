@@ -132,7 +132,10 @@ async fn run(
     mcp_server_args: Vec<String>,
 ) -> i32 {
     let client: Box<dyn LlmClient> = match cfg.provider {
-        Provider::AnthropicNative => Box::new(AnthropicNativeClient::new(cfg.api_key.clone())),
+        Provider::AnthropicNative => Box::new(AnthropicNativeClient::with_base_url(
+            &cfg.base_url,
+            cfg.api_key.clone(),
+        )),
         _ => Box::new(OpenAiCompatClient::new(
             cfg.base_url.clone(),
             cfg.api_key.clone(),
