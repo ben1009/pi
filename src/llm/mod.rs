@@ -5,7 +5,27 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio_stream::Stream;
 
+pub mod anthropic;
 pub mod openai_compat;
+
+/// Truncate a string to `max` bytes (UTF-8 safe), appending a notice if truncated.
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_owned()
+    } else {
+        let cut = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max)
+            .last()
+            .unwrap_or(0);
+        format!(
+            "{}\n... <truncated, {} more bytes>",
+            &s[..cut],
+            s.len() - cut
+        )
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -264,5 +284,26 @@ mod tests {
         let json = serde_json::to_string(&def).unwrap();
         assert!(json.contains("\"type\":\"function\""));
         assert!(json.contains("bash"));
+    }
+
+    #[test]
+    fn truncate_short() {
+        assert_eq!(truncate("abc", 10), "abc");
+    }
+
+    #[test]
+    fn truncate_long() {
+        let s = "a".repeat(200);
+        let r = truncate(&s, 100);
+        assert!(r.contains("truncated"));
+    }
+
+    #[test]
+    fn truncate_utf8_boundary() {
+        // Multi-byte UTF-8: each é is 2 bytes.
+        let s = "é".repeat(100); // 200 bytes
+        let r = truncate(&s, 50);
+        assert!(r.contains("truncated"));
+        // Should not panic on UTF-8 boundary.
     }
 }

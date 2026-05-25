@@ -7,26 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ChatRequest, ChatResponse, EventStream, LlmClient, Message, StreamEvent, ToolDef, Usage,
+    truncate,
 };
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_owned()
-    } else {
-        // char_indices to avoid splitting a UTF-8 codepoint at the boundary.
-        let cut = s
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= max)
-            .last()
-            .unwrap_or(0);
-        format!(
-            "{}\n... <truncated, {} more bytes>",
-            &s[..cut],
-            s.len() - cut
-        )
-    }
-}
 
 pub struct OpenAiCompatClient {
     url: String,
@@ -287,33 +269,6 @@ impl LlmClient for OpenAiCompatClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn truncate_short_string() {
-        assert_eq!(truncate("hello", 100), "hello");
-    }
-
-    #[test]
-    fn truncate_exact_limit() {
-        let s = "abcde";
-        assert_eq!(truncate(s, 5), "abcde");
-    }
-
-    #[test]
-    fn truncate_long_string() {
-        let s = "a".repeat(200);
-        let result = truncate(&s, 100);
-        assert!(result.contains("truncated"));
-        assert!(result.contains("more bytes"));
-    }
-
-    #[test]
-    fn truncate_utf8_boundary() {
-        // 'ñ' is 2 bytes. Truncation should not split it.
-        let s = "a".repeat(99) + "ñ";
-        let result = truncate(&s, 100);
-        assert!(result.starts_with(&"a".repeat(99)));
-    }
 
     #[test]
     fn parse_sse_done() {

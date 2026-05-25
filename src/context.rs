@@ -45,7 +45,7 @@ pub fn context_window(provider: Provider, model: &str) -> u32 {
 
     // Provider-based fallback (most reliable when user overrides model name).
     match provider {
-        Provider::Anthropic => 200_000,
+        Provider::Anthropic | Provider::AnthropicNative => 200_000,
         Provider::Openai => 128_000,
         Provider::Gemini => 1_048_576,
         Provider::Deepseek => 128_000,

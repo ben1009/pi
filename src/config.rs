@@ -15,6 +15,7 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Anthropic,
+    AnthropicNative,
     Openai,
     Gemini,
     Deepseek,
@@ -25,6 +26,7 @@ impl Provider {
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         Ok(match s.to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => Self::Anthropic,
+            "anthropic-native" | "ant" => Self::AnthropicNative,
             "openai" | "oai" => Self::Openai,
             "gemini" | "google" => Self::Gemini,
             "deepseek" | "ds" => Self::Deepseek,
@@ -36,6 +38,7 @@ impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
+            Self::AnthropicNative => "anthropic-native",
             Self::Openai => "openai",
             Self::Gemini => "gemini",
             Self::Deepseek => "deepseek",
@@ -46,6 +49,7 @@ impl Provider {
     pub fn base_url(self) -> &'static str {
         match self {
             Self::Anthropic => "https://api.anthropic.com/v1",
+            Self::AnthropicNative => "https://api.anthropic.com/v1",
             Self::Openai => "https://api.openai.com/v1",
             Self::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
             Self::Deepseek => "https://api.deepseek.com/v1",
@@ -56,6 +60,7 @@ impl Provider {
     pub fn default_model(self) -> &'static str {
         match self {
             Self::Anthropic => "claude-sonnet-4-6",
+            Self::AnthropicNative => "claude-sonnet-4-6",
             Self::Openai => "gpt-5",
             Self::Gemini => "gemini-2.5-pro",
             Self::Deepseek => "deepseek-chat",
@@ -65,7 +70,7 @@ impl Provider {
 
     pub fn api_key_env(self) -> &'static str {
         match self {
-            Self::Anthropic => "ANTHROPIC_API_KEY",
+            Self::Anthropic | Self::AnthropicNative => "ANTHROPIC_API_KEY",
             Self::Openai => "OPENAI_API_KEY",
             Self::Gemini => "GEMINI_API_KEY",
             Self::Deepseek => "DEEPSEEK_API_KEY",
@@ -138,6 +143,11 @@ mod tests {
     fn provider_parse_known() {
         assert_eq!(Provider::parse("anthropic").unwrap(), Provider::Anthropic);
         assert_eq!(Provider::parse("claude").unwrap(), Provider::Anthropic);
+        assert_eq!(
+            Provider::parse("anthropic-native").unwrap(),
+            Provider::AnthropicNative
+        );
+        assert_eq!(Provider::parse("ant").unwrap(), Provider::AnthropicNative);
         assert_eq!(Provider::parse("openai").unwrap(), Provider::Openai);
         assert_eq!(Provider::parse("oai").unwrap(), Provider::Openai);
         assert_eq!(Provider::parse("gemini").unwrap(), Provider::Gemini);
@@ -151,6 +161,11 @@ mod tests {
     #[test]
     fn provider_parse_case_insensitive() {
         assert_eq!(Provider::parse("Anthropic").unwrap(), Provider::Anthropic);
+        assert_eq!(
+            Provider::parse("Anthropic-Native").unwrap(),
+            Provider::AnthropicNative
+        );
+        assert_eq!(Provider::parse("ANT").unwrap(), Provider::AnthropicNative);
         assert_eq!(Provider::parse("OPENAI").unwrap(), Provider::Openai);
         assert_eq!(Provider::parse("DeepSeek").unwrap(), Provider::Deepseek);
     }
@@ -165,6 +180,7 @@ mod tests {
     fn provider_properties() {
         // Cover all variants for name(), base_url(), default_model(), api_key_env().
         assert_eq!(Provider::Anthropic.name(), "anthropic");
+        assert_eq!(Provider::AnthropicNative.name(), "anthropic-native");
         assert_eq!(Provider::Openai.name(), "openai");
         assert_eq!(Provider::Gemini.name(), "gemini");
         assert_eq!(Provider::Deepseek.name(), "deepseek");
@@ -172,6 +188,10 @@ mod tests {
 
         assert_eq!(
             Provider::Anthropic.base_url(),
+            "https://api.anthropic.com/v1"
+        );
+        assert_eq!(
+            Provider::AnthropicNative.base_url(),
             "https://api.anthropic.com/v1"
         );
         assert_eq!(Provider::Openai.base_url(), "https://api.openai.com/v1");
@@ -183,12 +203,17 @@ mod tests {
         assert_eq!(Provider::Kimi.base_url(), "https://api.moonshot.ai/v1");
 
         assert_eq!(Provider::Anthropic.default_model(), "claude-sonnet-4-6");
+        assert_eq!(
+            Provider::AnthropicNative.default_model(),
+            "claude-sonnet-4-6"
+        );
         assert_eq!(Provider::Openai.default_model(), "gpt-5");
         assert_eq!(Provider::Gemini.default_model(), "gemini-2.5-pro");
         assert_eq!(Provider::Deepseek.default_model(), "deepseek-chat");
         assert_eq!(Provider::Kimi.default_model(), "kimi-k2-0905-preview");
 
         assert_eq!(Provider::Anthropic.api_key_env(), "ANTHROPIC_API_KEY");
+        assert_eq!(Provider::AnthropicNative.api_key_env(), "ANTHROPIC_API_KEY");
         assert_eq!(Provider::Openai.api_key_env(), "OPENAI_API_KEY");
         assert_eq!(Provider::Gemini.api_key_env(), "GEMINI_API_KEY");
         assert_eq!(Provider::Deepseek.api_key_env(), "DEEPSEEK_API_KEY");
@@ -255,6 +280,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for (provider, env_key) in [
             ("anthropic", "ANTHROPIC_API_KEY"),
+            ("anthropic-native", "ANTHROPIC_API_KEY"),
             ("openai", "OPENAI_API_KEY"),
             ("gemini", "GEMINI_API_KEY"),
             ("deepseek", "DEEPSEEK_API_KEY"),
