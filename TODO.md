@@ -15,17 +15,15 @@ Pre-v1, in priority order.
 
 ## Next
 
-- **Native Anthropic adapter.** Prompt caching headers
-  (`cache_control: ephemeral` on system prompt + tool list) cut cost
-  significantly across multi-turn sessions. Implement as a second
-  `LlmClient` impl behind `pi-rs -P anthropic-native`, leave OpenAI-compat
-  Anthropic as the default fallback.
-- **Subagents.** Parked while wrapping M2. Needs its own RFC pass before
-  code: `task` tool shape (stateless one-shot vs model override vs
-  parallel fan-out), `--max-subagent-turns`, cost/blast-radius story.
+- **Subagents.** RFC drafted (`docs/rfc/002-subagents.md`, PR #26).
+  Ready for implementation: `task` tool shape, `--max-subagent-turns`,
+  model arbitrage, tool isolation.
 
 ## Done
 
+- ~~**Native Anthropic adapter.**~~ Done. PR #27. `AnthropicNativeClient`
+  with prompt caching (`cache_control: ephemeral` on system + tools),
+  SSE streaming, dynamic dispatch via `Box<dyn LlmClient>`.
 - ~~**Streaming responses.**~~ Done. SSE streaming with content deltas and
   tool-call accumulation via `complete_stream` / `send_streaming`.
 - ~~**Conversation `/resume`.**~~ Done. `pi-rs --resume <id>` reloads saved
