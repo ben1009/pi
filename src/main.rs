@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use pi_rs::{
-    config::{self, ConfigError, ResolveInput, ResolvedConfig},
+    config::{self, ConfigError, Provider, ResolveInput, ResolvedConfig},
     context::{ContextTracker, context_window},
     days_to_ymd,
     llm::{
         ChatRequest, ChatResponse, LlmClient, Message, Role, StreamEvent, Usage,
-        openai_compat::OpenAiCompatClient,
+        anthropic::AnthropicNativeClient, openai_compat::OpenAiCompatClient,
     },
     mcp, session, system_prompt,
     tools::{Registry, ToolCtx},
@@ -131,7 +131,13 @@ async fn run(
     resume_id: Option<String>,
     mcp_server_args: Vec<String>,
 ) -> i32 {
-    let client = OpenAiCompatClient::new(cfg.base_url.clone(), cfg.api_key.clone());
+    let client: Box<dyn LlmClient> = match cfg.provider {
+        Provider::AnthropicNative => Box::new(AnthropicNativeClient::new(cfg.api_key.clone())),
+        _ => Box::new(OpenAiCompatClient::new(
+            cfg.base_url.clone(),
+            cfg.api_key.clone(),
+        )),
+    };
     let mut registry = Registry::with_defaults();
 
     // Connect to MCP servers if configured.
@@ -175,7 +181,7 @@ async fn run(
 
     if let Some(prompt) = one_shot {
         messages.push(Message::user(prompt));
-        match drive(&client, &cfg, &registry, &mut messages, false).await {
+        match drive(&*client, &cfg, &registry, &mut messages, false).await {
             Ok(Some(resp)) => {
                 let text = resp.message.content.as_deref().unwrap_or("");
                 if !text.is_empty() {
@@ -202,7 +208,7 @@ async fn run(
         }
     } else {
         match repl(
-            &client,
+            &*client,
             &cfg,
             &registry,
             messages,
@@ -240,7 +246,7 @@ fn chrono_now() -> String {
 }
 
 async fn repl(
-    client: &OpenAiCompatClient,
+    client: &dyn LlmClient,
     cfg: &ResolvedConfig,
     registry: &Registry,
     mut messages: Vec<Message>,
@@ -459,7 +465,7 @@ async fn repl(
 ///   Ok(None)       — max_turns reached.
 ///   Err(e)         — API or fatal error.
 async fn drive(
-    client: &OpenAiCompatClient,
+    client: &dyn LlmClient,
     cfg: &ResolvedConfig,
     registry: &Registry,
     messages: &mut Vec<Message>,
@@ -534,7 +540,7 @@ fn tool_message(id: &str, content: String) -> Message {
 }
 
 async fn send_full(
-    client: &OpenAiCompatClient,
+    client: &dyn LlmClient,
     cfg: &ResolvedConfig,
     registry: &Registry,
     messages: &[Message],
@@ -551,7 +557,7 @@ async fn send_full(
 /// Stream a chat completion, printing content deltas to stdout as they arrive.
 /// Accumulates tool call deltas into complete ToolCall structs.
 async fn send_streaming(
-    client: &OpenAiCompatClient,
+    client: &dyn LlmClient,
     cfg: &ResolvedConfig,
     registry: &Registry,
     messages: &[Message],
@@ -652,7 +658,7 @@ async fn send_streaming(
 /// Summarize the conversation history into a single message.
 /// Returns the number of messages that were compacted.
 async fn compact(
-    client: &OpenAiCompatClient,
+    client: &dyn LlmClient,
     cfg: &ResolvedConfig,
     _registry: &Registry,
     messages: &mut Vec<Message>,
